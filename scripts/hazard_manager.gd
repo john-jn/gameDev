@@ -55,7 +55,9 @@ func _pick_tile(map: CityMap, groups: Array[SurvivorGroup]) -> Vector2i:
 	for g in groups:
 		if g.state == SurvivorGroup.State.MOVING and not g.halt_requested:
 			movers.append(g)
-	movers.shuffle()
+	# Seeded shuffles (not Array.shuffle(), which uses the global RNG) keep a
+	# session started with a fixed seed reproducible.
+	MapGenerator.shuffle(movers, _rng)
 	for g in movers:
 		# Leave at least one free tile between the group's stop tile and the fire,
 		# and never block the final step into the safe zone.
@@ -64,7 +66,7 @@ func _pick_tile(map: CityMap, groups: Array[SurvivorGroup]) -> Vector2i:
 			var p := g.path[i]
 			if not map.is_safe(p):
 				cands.append(p)
-		cands.shuffle()
+		MapGenerator.shuffle(cands, _rng)
 		for p in cands:
 			if _can_block(map, p, groups):
 				return p

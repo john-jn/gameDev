@@ -19,6 +19,9 @@ var tiles := PackedInt32Array()
 var fires: Dictionary = {}
 var survivor_starts: Array[Vector2i] = []
 var survivor_sizes: Array[int] = []
+## How the map was made, for logs and reproduction, e.g.
+## {"source": "physarum", "seed": 123, "attempt": 0, "center": Vector2(...)}.
+var gen_info: Dictionary = {}
 var _fire_mask := PackedByteArray()  ## 1 where a fire burns, mirrors `fires`
 
 
@@ -32,6 +35,7 @@ func setup(w: int, h: int, fill: int) -> void:
 	fires.clear()
 	survivor_starts.clear()
 	survivor_sizes.clear()
+	gen_info = {}
 
 
 func in_bounds(p: Vector2i) -> bool:
@@ -154,6 +158,90 @@ func is_robust(start: Vector2i) -> bool:
 		if not has_path(start, p):
 			return false
 	return true
+
+
+## is_robust() for every tile at once, in one O(tiles) pass. Indexed by
+## y * width + x: 1 where the tile can reach safety and no single non-SAFE
+## tile (other than itself) lies on all of its routes, i.e. where
+## is_robust() would return true. Map generation validates layouts thousands
+## of times, so this replaces one BFS per route tile with a single DFS.
+##
+## Method: Tarjan's articulation-point DFS from a virtual root joined to every
+## open SAFE tile. A tile v cuts off its DFS child c's subtree from safety when
+## low[c] >= disc[v]; a tile is fragile if any such cut lies above it.
+func robust_mask() -> PackedByteArray:
+	var n := tiles.size()
+	var root := n
+	var disc := PackedInt32Array()
+	disc.resize(n + 1)
+	disc.fill(-1)
+	var low := PackedInt32Array()
+	low.resize(n + 1)
+	var par := PackedInt32Array()
+	par.resize(n + 1)
+	par.fill(-1)
+	var order := PackedInt32Array()  # discovery order: parents before children
+	var safe_list := PackedInt32Array()
+	for i in n:
+		if tiles[i] == Tile.SAFE and _fire_mask[i] == 0:
+			safe_list.append(i)
+	disc[root] = 0
+	low[root] = 0
+	var timer := 1
+	var stack_node := PackedInt32Array([root])
+	var stack_next := PackedInt32Array([0])
+	while not stack_node.is_empty():
+		var top := stack_node.size() - 1
+		var u := stack_node[top]
+		var k := stack_next[top]
+		var v := -1
+		var done := false
+		if u == root:
+			if k < safe_list.size():
+				v = safe_list[k]
+			else:
+				done = true
+		elif k < 5:
+			if k == 4:
+				v = root if tiles[u] == Tile.SAFE else -1
+			else:
+				var x := u % width
+				if not ((k == 0 and x == width - 1) or (k == 1 and x == 0)):
+					v = u + 1 if k == 0 else (u - 1 if k == 1 else (u + width if k == 2 else u - width))
+					if v < 0 or v >= n or _fire_mask[v] == 1 or (tiles[v] != Tile.ROAD and tiles[v] != Tile.SAFE):
+						v = -1
+		else:
+			done = true
+		if done:
+			stack_node.resize(top)
+			stack_next.resize(top)
+			if par[u] != -1:
+				low[par[u]] = mini(low[par[u]], low[u])
+			continue
+		stack_next[top] = k + 1
+		if v == -1:
+			continue
+		if disc[v] == -1:
+			par[v] = u
+			disc[v] = timer
+			low[v] = timer
+			timer += 1
+			order.append(v)
+			stack_node.append(v)
+			stack_next.append(0)
+		elif v != par[u]:
+			low[u] = mini(low[u], disc[v])
+	var robust := PackedByteArray()
+	robust.resize(n)
+	var fragile := PackedByteArray()
+	fragile.resize(n + 1)
+	for c in order:
+		var p := par[c]
+		fragile[c] = fragile[p]
+		if p != root and tiles[p] != Tile.SAFE and low[c] >= disc[p]:
+			fragile[c] = 1
+		robust[c] = 1 - fragile[c]
+	return robust
 
 
 ## BFS distance (in moves) from the safe zone to every tile; -1 if unreachable.
