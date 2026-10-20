@@ -77,7 +77,11 @@ var btn_next: Button
 
 
 func _ready() -> void:
+	# `godot -- --seed=N` replays a whole session (maps and hazards) for debugging.
 	rng.randomize()
+	for arg in OS.get_cmdline_user_args():
+		if arg.begins_with("--seed=") and arg.substr(7).is_valid_int():
+			rng.seed = arg.substr(7).to_int()
 	_build_ui()
 	_start_round()
 
@@ -103,6 +107,8 @@ func _start_round() -> void:
 	alert_panel.visible = false
 	_log("Round %d (%s): %d groups, %d fire(s) on map, %d alert(s) expected." % [
 		round_num, _difficulty_name(), groups.size(), map.fires.size(), hazards.events_remaining])
+	# MapGenerator.build_from_seed(round, seed) rebuilds this exact map.
+	print("Evac Grid round %d map: %s" % [round_num, map.gen_info])
 	_notify("Tap a yellow survivor group to start planning. The plan clock is running!", COL_ACCENT)
 	_update_ui()
 
