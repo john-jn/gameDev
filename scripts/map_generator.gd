@@ -3,9 +3,11 @@ extends RefCounted
 ## Builds the city for each round.
 ## Round 1 is a fixed, hand-authored training map. Later rounds grow their road
 ## network with a Physarum (slime mould) simulation started from a randomized
-## colony center (see PhysarumSim). If that fails validation a bounded number
-## of times, the older street lattice (which always has alternate routes) is
-## tried, and finally the hand-authored map, so a round can always be played.
+## colony center (see PhysarumSim), then organize the result into a top-down
+## city plan: orthogonal avenues, side streets, building blocks and cross-links.
+## If that fails validation a bounded number of times, the older street lattice
+## (which always has alternate routes) is tried, and finally the hand-authored
+## map, so a round can always be played.
 ## After the roads exist, both generators share the same steps: survivors are
 ## placed, road segments are closed and fires pre-placed one at a time, and any
 ## change that would strand a group or remove its detours is reverted.
@@ -60,6 +62,10 @@ const MIN_BYPASS_SIDE := 4
 const MAX_CLOSURE_LENGTH := 4
 ## Map area (tiles) per food source.
 const AREA_PER_FOOD := 24.0
+## City blocks are deliberately small enough to produce several alternate
+## routes, while still leaving building clusters between streets.
+const CITY_MIN_BLOCK_WIDTH := 2
+const CITY_AVENUE_WIDTH := 2
 
 
 static func build_round(round_num: int, rng: RandomNumberGenerator) -> CityMap:
@@ -184,8 +190,15 @@ static func _try_physarum(round_num: int, rng: RandomNumberGenerator, forced_cen
 	sim.run(rng)
 	var trail := sim.tile_trail()
 
-	# 5. Roads follow the veins: link the colony center, the food and the
-	#    junctions the colony formed by its own accord.
+	# 5. Establish a street plan first. The Physarum field decides which of the
+	#    planned streets become wider avenues, while the regular orthogonal plan
+	#    gives the map the multiple routes and block structure of a city.
+	var city_info := _lay_city_grid(m, round_num, trail, rng)
+
+	# 6. Roads follow the veins: link the colony center, the food and the
+	#    junctions the colony formed by its own accord. Existing city streets are
+	#    cheap, so these connectors generally reuse the grid and create extra
+	#    district-to-district routes instead of isolated organic branches.
 	var nodes: Array[Vector2i] = [safe_entry, center_tile]
 	for f in foods:
 		if not nodes.has(f):
@@ -194,7 +207,7 @@ static func _try_physarum(round_num: int, rng: RandomNumberGenerator, forced_cen
 		nodes.append(j)
 	_carve_links(m, trail, nodes)
 
-	# 6. Clean up: keep only roads joined to the safe zone, thin 2x2 road
+	# 7. Clean up: keep only roads joined to the safe zone, thin 2x2 road
 	#    blobs, add bypasses around single points of failure until every road
 	#    tile has a detour (or the budget runs out), thin again, then drop
 	#    whatever dead ends are left.
@@ -204,9 +217,9 @@ static func _try_physarum(round_num: int, rng: RandomNumberGenerator, forced_cen
 	_thin_blobs(m)
 	_prune_dead_ends(m)
 	_sprinkle_parks(m, rng)
-	m.gen_info = {"center": center, "spawn_radius": radius, "steps": sim.steps_run, "nodes": nodes.size()}
+	m.gen_info = {"center": center, "spawn_radius": radius, "steps": sim.steps_run, "nodes": nodes.size(), "city": city_info}
 
-	# 7. Shared gameplay steps.
+	# 8. Shared gameplay steps.
 	if not _place_survivors(m, round_num, rng):
 		return null
 	_close_segments(m, _road_segments(m), closure_count_for(round_num), rng)
@@ -305,6 +318,81 @@ static func _trail_junctions(m: CityMap, trail: PackedFloat32Array, nodes: Array
 		if ok:
 			out.append(p)
 	return out
+
+
+## Builds a compact top-down street plan with unevenly spaced city blocks.
+## The base plan is a connected grid, so every district has several ways to
+## reach the safe zone. Physarum's trail field chooses the two main avenues;
+## making those streets wider gives the organic simulation a visible effect
+## without allowing it to collapse the whole map into one long corridor.
+static func _lay_city_grid(m: CityMap, round_num: int, trail: PackedFloat32Array, rng: RandomNumberGenerator) -> Dictionary:
+	var blocks_x := mini(4 + round_num, 9)
+	var blocks_y := mini(3 + floori(round_num / 2.0), 6)
+	var xs := _city_line_positions(m.width, blocks_x, rng)
+	var ys := _city_line_positions(m.height, blocks_y, rng)
+	for x in xs:
+		for y in m.height:
+			if not m.is_safe(Vector2i(x, y)):
+				m.set_tile(Vector2i(x, y), CityMap.Tile.ROAD)
+	for y in ys:
+		for x in m.width:
+			if not m.is_safe(Vector2i(x, y)):
+				m.set_tile(Vector2i(x, y), CityMap.Tile.ROAD)
+
+	var avenue_x := _strongest_city_line(trail, m.width, m.height, xs, true)
+	var avenue_y := _strongest_city_line(trail, m.width, m.height, ys, false)
+	# Two-tile avenues are selected from the simulated trail, so different map
+	# seeds produce different district hierarchies while keeping the grid legible.
+	for offset in CITY_AVENUE_WIDTH:
+		var x := avenue_x + offset
+		if x < 0 or x >= m.width:
+			continue
+		for y in m.height:
+			if not m.is_safe(Vector2i(x, y)):
+				m.set_tile(Vector2i(x, y), CityMap.Tile.ROAD)
+	for offset in CITY_AVENUE_WIDTH:
+		var y := avenue_y + offset
+		if y < 0 or y >= m.height:
+			continue
+		for x in m.width:
+			if not m.is_safe(Vector2i(x, y)):
+				m.set_tile(Vector2i(x, y), CityMap.Tile.ROAD)
+	return {"blocks_x": blocks_x, "blocks_y": blocks_y, "avenue_x": avenue_x, "avenue_y": avenue_y}
+
+
+## Uneven but bounded line positions: the blocks read as planned city parcels,
+## while a small seed-dependent offset prevents every round from looking alike.
+static func _city_line_positions(extent: int, block_count: int, rng: RandomNumberGenerator) -> Array[int]:
+	var out: Array[int] = [0]
+	for i in range(1, block_count):
+		var ideal := roundi(float(extent - 1) * float(i) / float(block_count))
+		var min_pos := out[-1] + CITY_MIN_BLOCK_WIDTH
+		var max_pos := (extent - 1) - CITY_MIN_BLOCK_WIDTH * (block_count - i)
+		out.append(clampi(ideal + rng.randi_range(-1, 1), min_pos, max_pos))
+	out.append(extent - 1)
+	return out
+
+
+static func _strongest_city_line(trail: PackedFloat32Array, width: int, height: int,
+		lines: Array[int], vertical: bool) -> int:
+	var best_line := lines[0]
+	var best_score := -1.0
+	for line in lines:
+		var score := 0.0
+		var count := 0
+		if vertical:
+			for y in height:
+				score += trail[y * width + line]
+				count += 1
+		else:
+			for x in width:
+				score += trail[line * width + x]
+				count += 1
+		score /= float(maxi(count, 1))
+		if score > best_score:
+			best_score = score
+			best_line = line
+	return best_line
 
 
 ## Chooses which nodes to link. Candidates are the Gabriel graph of the nodes

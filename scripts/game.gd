@@ -105,7 +105,7 @@ func _start_round() -> void:
 	map_view.reset_effects()
 	result_panel.visible = false
 	alert_panel.visible = false
-	_log("Round %d (%s): %d groups, %d fire(s) on map, %d alert(s) expected." % [
+	_log("Round %d (%s): %d groups, %d fire(s) on map, %d timed alert(s) incoming." % [
 		round_num, _difficulty_name(), groups.size(), map.fires.size(), hazards.events_remaining])
 	# MapGenerator.build_from_seed(round, seed) rebuilds this exact map.
 	print("Evac Grid round %d map: %s" % [round_num, map.gen_info])
@@ -291,7 +291,6 @@ func _dispatch() -> void:
 		kind, selected.label, route.size() - 1, shortest, secs, pts, "response" if is_reroute else "planning"])
 	map_view.popup(selected.tile, "+%d" % pts, COL_ACCENT)
 	selected.dispatch(route)
-	hazards.on_dispatch()
 	plan_clock_start = round_time
 	selected = null
 	route.clear()
