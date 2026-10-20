@@ -14,7 +14,7 @@ No plugins or external assets are used.
 1. **Tap a yellow circle** (a survivor group; the badge is its head count).
 2. **Tap or drag along adjacent road tiles** to the green **SAFE** zone. Valid next tiles are outlined. Tap an earlier route tile to cut the route back to it.
 3. Press **DISPATCH** (Enter). The group walks your route tile by tile.
-4. **FIRE!** A hazard can block an active route. The group stops, the blocked segment flashes red, and an alert banner appears. Draw a detour from the group's current tile and dispatch again.
+4. **FIRE!** Hazards arrive on a real-time timer, even before a group moves. A fire can block an active route; the group stops, the blocked segment flashes red, and an alert banner appears. Draw a detour from the group's current tile and dispatch again.
 5. When every group is safe or lost, a score breakdown appears. Press **Next Round** to continue.
 
 Keys: Enter dispatch, Z/Backspace undo, C clear, Tab next group, Esc deselect.
@@ -34,8 +34,8 @@ If fewer than half the survivors are saved, the round fails, its points are not 
 
 ## Progression
 
-- **Round 1:** a hand-authored training map with 2 groups and 1 hazard alert.
-- **Round 2 onward:** procedural maps that get gradually wider, with more groups (up to 6), more road closures, pre-existing fires, and more frequent hazard alerts (up to 5 per round).
+- **Round 1:** a hand-authored training map with 2 groups and a timed hazard schedule.
+- **Round 2 onward:** seeded Physarum layouts organized into uneven city blocks with side streets, cross-links and wider avenues. Maps get gradually wider, with more groups (up to 6), more road closures, pre-existing fires, and a progressively faster timed hazard schedule (6 randomized alerts per round).
 
 ## Code layout
 
@@ -44,10 +44,10 @@ If fewer than half the survivors are saved, the round fails, its points are not 
 | `scenes/main.tscn` | Single scene: a root `Control` running `game.gd` |
 | `scripts/game.gd` | Round flow, operator actions, UI construction and refresh |
 | `scripts/city_map.gd` | Grid data, fires and smoke, BFS pathfinding, robustness check |
-| `scripts/map_generator.gd` | Hand-authored round 1 and procedural rounds with safety validation |
+| `scripts/map_generator.gd` | Hand-authored round 1 and seeded Physarum/city-block rounds with safety validation |
 | `scripts/route_validator.gd` | Route legality: start tile, contiguity, no fire or buildings, ends in SAFE |
 | `scripts/survivor_group.gd` | Group state machine and tile-by-tile movement |
-| `scripts/hazard_manager.gd` | Places fires on active routes, only where every group keeps a detour |
+| `scripts/hazard_manager.gd` | Places timed fires, only where every active group keeps a detour |
 | `scripts/score_keeper.gd` | Score buckets and the result breakdown |
 | `scripts/map_view.gd` | Top-down drawing, mouse and touch input, legend symbols |
 
