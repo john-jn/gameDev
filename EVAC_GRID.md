@@ -45,15 +45,31 @@ If fewer than half the survivors are saved, the round fails, its points are not 
 | `scripts/game.gd` | Round flow, operator actions, UI construction and refresh |
 | `scripts/city_map.gd` | Grid data, fires and smoke, BFS pathfinding, robustness check |
 | `scripts/map_generator.gd` | Hand-authored round 1 and seeded Physarum/city-block rounds with safety validation |
+| `scripts/physarum_sim.gd` | Seeded slime-mould agent simulation: randomized colony center, trail map, diffusion/decay, food attractors |
 | `scripts/route_validator.gd` | Route legality: start tile, contiguity, no fire or buildings, ends in SAFE |
 | `scripts/survivor_group.gd` | Group state machine and tile-by-tile movement |
 | `scripts/hazard_manager.gd` | Places timed fires, only where every active group keeps a detour |
 | `scripts/score_keeper.gd` | Score buckets and the result breakdown |
 | `scripts/map_view.gd` | Top-down drawing, mouse and touch input, legend symbols |
 
+## Procedural generation
+
+1. Pick the map size and put a 3x3 safe zone, ringed by road, one tile in from a random edge.
+2. Pick the colony center at random, keeping the whole spawn disc at least `CENTER_MARGIN` tiles from every edge and (when it fits) 4+ tiles from the safe zone.
+3. Scatter food sources evenly over the whole map, plus a strong one at the safe zone, and run the Physarum agents (sense, turn, move, deposit; the trail diffuses and decays). Run length grows with the distance from the center to the farthest corner, so off-center colonies still reach the far side.
+4. Turn trail veins into roads. Nodes are the colony center, the food and the colony's own junctions (trail peaks). Links come from their Gabriel graph: its spanning tree always, other links only where the colony grew a vein. Each link is carved as the cheapest path over the trail.
+5. Clean up and reinforce: drop roads cut off from safety, thin 2x2 blobs, carve bypasses around single points of failure, prune dead ends.
+6. Shared with the lattice: place survivors, close short road segments, pre-place fires, validate.
+
+Up to 12 Physarum attempts are made, each with a new center; then up to 40 street-lattice attempts; then the hand-authored map.
+
+**Seeds.** Each round draws one map seed from the game RNG, and every attempt derives its own RNG from (seed, round, attempt), so `MapGenerator.build_from_seed(round, seed)` rebuilds a map exactly. The seed, attempt, colony center and source are printed to stdout at round start. `godot -- --seed=N` replays a whole session (maps and hazards).
+
+**Tests.** `godot --headless --path . --script res://tests/test_generation.gd` (add `-- --seeds=N` for more maps per round) checks hundreds of generated maps: solvability, detours, reproducibility, center bounds, fallbacks, live-hazard play-throughs, map-view alignment and the real game scene.
+
 ## Guarantees and assumptions
 
-- Every generated map is checked so each group has a path to safety, and still has one if any single tile on its shortest route is blocked. Every open road also stays connected to the safe zone. Any change that breaks this is reverted. If generation fails, the hand-authored map is used.
+- Every generated map is checked so each group has a path to safety, and still has one if any single tile on its shortest route is blocked. Every open road also stays connected to the safe zone. Any change that breaks this is reverted. If Physarum generation fails, the street lattice is used, and if that fails too, the hand-authored map.
 - An in-run fire is only placed where every active group still has a route to safety, so no group can be stranded.
 - When a fire cuts a route, the group stops at the next tile boundary rather than walking up to the fire.
 - Smoke (road tiles next to a fire) can be walked through but costs one survivor per tile. This makes the trade-off between a short route and a safe route explicit.
