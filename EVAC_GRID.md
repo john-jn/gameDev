@@ -35,7 +35,7 @@ If fewer than half the survivors are saved, the round fails, its points are not 
 ## Progression
 
 - **Round 1:** a hand-authored training map with 2 groups and a timed hazard schedule.
-- **Round 2 onward:** seeded Physarum layouts organized into uneven city blocks with side streets, cross-links and wider avenues. Maps get gradually wider, with more groups (up to 6), more road closures, pre-existing fires, and a progressively faster timed hazard schedule (6 randomized alerts per round).
+- **Round 2 onward:** seeded Physarum layouts organized into uneven city blocks with side streets, cross-links and wider avenues. Maps get gradually wider, with more groups (up to 6), more road closures, pre-existing fires, and a progressively faster timed hazard schedule (3 slow fires in round 1, rising to 6 per round; round 1 gets a ~11-14s grace period).
 
 ## Code layout
 
