@@ -5,8 +5,13 @@ extends RefCounted
 ## Movement is 4-directional (no diagonals) along ROAD and SAFE tiles.
 ## BFS runs on flat packed arrays because map generation calls it thousands
 ## of times while validating layouts.
+## The tiles alone decide movement. The city plan on top of them (building
+## lots, road classes, closures) comes from CityLayout and is read by the
+## renderer; pathfinding never looks at it.
 
 enum Tile { ROAD, BUILDING, PARK, SAFE }
+## Road hierarchy for drawing: AVENUE tiles are part of a two-lane road.
+enum RoadClass { NONE, STREET, AVENUE }
 
 const DIRS := [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]
 const NO_TILE := Vector2i(-1, -1)
@@ -22,6 +27,16 @@ var survivor_sizes: Array[int] = []
 ## How the map was made, for logs and reproduction, e.g.
 ## {"source": "physarum", "seed": 123, "attempt": 0, "center": Vector2(...)}.
 var gen_info: Dictionary = {}
+## Road tiles closed as rubble during generation (Vector2i -> true). They are
+## BUILDING tiles, so impassable; this only records that they were a street.
+var road_closures: Dictionary = {}
+## City plan from CityLayout.build(); empty until a layout is built.
+var buildings: Array[CityBuilding] = []
+var building_ids := PackedInt32Array()  ## per tile: index in `buildings`, or -1
+var road_class := PackedByteArray()     ## per tile: RoadClass
+## Bumped whenever the city plan or a designation changes, so renderers know
+## to rebuild cached geometry.
+var layout_version := 0
 var _fire_mask := PackedByteArray()  ## 1 where a fire burns, mirrors `fires`
 
 
@@ -36,6 +51,10 @@ func setup(w: int, h: int, fill: int) -> void:
 	survivor_starts.clear()
 	survivor_sizes.clear()
 	gen_info = {}
+	road_closures.clear()
+	buildings.clear()
+	building_ids = PackedInt32Array()
+	road_class = PackedByteArray()
 
 
 func in_bounds(p: Vector2i) -> bool:
@@ -106,6 +125,59 @@ func remove_fire(p: Vector2i) -> void:
 	if in_bounds(p):
 		fires.erase(p)
 		_fire_mask[p.y * width + p.x] = 0
+
+
+func is_road_closure(p: Vector2i) -> bool:
+	return road_closures.has(p) and get_tile(p) == Tile.BUILDING
+
+
+# --- City plan ------------------------------------------------------------------
+
+## The lot covering `p`, or null (roads, closures, off-map, no layout yet).
+func building_at(p: Vector2i) -> CityBuilding:
+	if not in_bounds(p) or building_ids.size() != tiles.size():
+		return null
+	var i := building_ids[p.y * width + p.x]
+	return buildings[i] if i >= 0 else null
+
+
+func get_road_class(p: Vector2i) -> int:
+	if not in_bounds(p) or road_class.size() != tiles.size():
+		return RoadClass.NONE
+	return road_class[p.y * width + p.x]
+
+
+func safe_zones() -> Array[CityBuilding]:
+	var out: Array[CityBuilding] = []
+	for b in buildings:
+		if b.is_safe_zone():
+			out.append(b)
+	return out
+
+
+## A BUILDING lot can become a safe zone when an open road leads into it.
+func can_be_safe_zone(b: CityBuilding) -> bool:
+	if b == null or b.kind != CityBuilding.Kind.BUILDING:
+		return false
+	for e in b.entrances:
+		if get_tile(e) == Tile.ROAD:
+			return true
+	return false
+
+
+## Makes building `b` an evacuation destination. Its footprint becomes SAFE
+## tiles, so pathfinding and RouteValidator accept it as a goal through any of
+## its road entrances, and renderers highlight it. The highlight is drawing
+## only: the SAFE tiles are what count. Returns false, changing nothing, if the
+## lot is not eligible.
+func designate_safe_zone(b: CityBuilding) -> bool:
+	if not can_be_safe_zone(b):
+		return false
+	for c in b.cells:
+		set_tile(c, Tile.SAFE)
+	b.designation = CityBuilding.Designation.SAFE_ZONE
+	layout_version += 1
+	return true
 
 
 ## Breadth-first search from `start` to the nearest SAFE tile.

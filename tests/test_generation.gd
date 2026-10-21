@@ -29,6 +29,7 @@ func _run() -> void:
 	test_gameplay_simulation()
 	test_map_view_alignment()
 	await test_game_integration()
+	await test_round_flow()
 	print("\n==== %d checks, %d failures, %.1fs ====" % [checks, failures, (Time.get_ticks_msec() - t0) / 1000.0])
 	quit(1 if failures > 0 else 0)
 
@@ -62,6 +63,10 @@ func validate_map(m: CityMap, round_num: int, tag: String) -> bool:
 		if t == CityMap.Tile.SAFE:
 			safe_count += 1
 	ok = check(safe_count > 0, "%s: no safe zone" % tag) and ok
+	# City plan: lots cover exactly the non-road tiles, never a road or start.
+	var problems := CityLayout.find_problems(m)
+	ok = check(problems.is_empty(), "%s: city layout: %s" % [tag, problems.slice(0, 3)]) and ok
+	ok = check(not m.safe_zones().is_empty(), "%s: no safe-zone building" % tag) and ok
 	return ok
 
 
@@ -169,7 +174,8 @@ func test_reproducibility() -> void:
 			total += 1
 			var eq := a.tiles == b.tiles and a.survivor_starts == b.survivor_starts \
 					and a.survivor_sizes == b.survivor_sizes and a.fires.keys() == b.fires.keys() \
-					and a.gen_info == b.gen_info and a.width == b.width
+					and a.gen_info == b.gen_info and a.width == b.width \
+					and a.building_ids == b.building_ids and _lot_signature(a) == _lot_signature(b)
 			if check(eq, "round %d seed %d differs between runs" % [r, seed]):
 				same += 1
 	# build_round draws exactly one seed from the caller's RNG.
@@ -183,6 +189,13 @@ func test_reproducibility() -> void:
 	var rebuilt := MapGenerator.build_from_seed(3, m1.gen_info["seed"])
 	check(rebuilt.tiles == m1.tiles, "logged seed does not rebuild the map")
 	print("  identical rebuilds: %d/%d (+ build_round / logged-seed checks)" % [same, total])
+
+
+func _lot_signature(m: CityMap) -> Array:
+	var out := []
+	for b in m.buildings:
+		out.append([b.kind, b.designation, b.variant, b.rotation, b.cells, b.entrance])
+	return out
 
 
 func test_variation() -> void:
@@ -440,5 +453,45 @@ func test_game_integration() -> void:
 		for i in 30:
 			await process_frame
 		print("  round %d: %s %dx%d, %d groups, log: %s" % [r, m.gen_info.get("source"), m.width, m.height, game.groups.size(), game.log_lines[-1]])
+	game.queue_free()
+	await process_frame
+
+
+## Plays round 1 to the end through the game controller (simulated time, live
+## hazards, detours), banks the score and advances; then fails round 2 and
+## checks that Retry replays it without banking.
+func test_round_flow() -> void:
+	print("\n[round flow] play, bank, next round, fail, retry")
+	var game: Control = load("res://scenes/main.tscn").instantiate()
+	root.add_child(game)
+	await process_frame
+	game.rng.seed = 777
+	game.round_num = 1
+	game._start_round()
+	var t := 0.0
+	while not game.round_over and t < 120.0:
+		for g in game.groups:
+			if g.can_plan():
+				game._select_group(g)
+				for p in game.map.find_path(g.tile).slice(1):
+					game._try_extend(p)
+				game._dispatch()
+		game._process(0.05)
+		t += 0.05
+	check(game.round_over and game.last_round_success, "round 1 should end in success (t=%.1f)" % t)
+	check(game.result_panel.visible, "result panel should show")
+	var banked: int = game.banked_score
+	check(banked == game.scorer.total() and banked > 0, "round score %d should be banked (banked %d)" % [game.scorer.total(), banked])
+	game._on_next_pressed()
+	check(game.round_num == 2 and not game.round_over and not game.result_panel.visible, "Next Round should start round 2")
+	for g in game.groups:
+		g.state = SurvivorGroup.State.LOST
+	game._process(0.05)
+	check(game.round_over and not game.last_round_success, "losing every group should fail the round")
+	check(game.banked_score == banked, "a failed round must not bank points")
+	check(game.btn_next.text.begins_with("RETRY"), "failed round should offer Retry")
+	game._on_next_pressed()
+	check(game.round_num == 2 and not game.round_over, "Retry should replay round 2")
+	print("  round 1 cleared in %.1fs of game time, banked %d; round 2 failed and retried" % [t, banked])
 	game.queue_free()
 	await process_frame
