@@ -11,6 +11,9 @@ extends RefCounted
 ## After the roads exist, both generators share the same steps: survivors are
 ## placed, road segments are closed and fires pre-placed one at a time, and any
 ## change that would strand a group or remove its detours is reverted.
+## Only a map that passed validation gets a city plan (CityLayout: building
+## lots, safe-zone building, road classes). The plan never changes a tile, and
+## it draws from the RNG last, so the same seed still yields the same tiles.
 ##
 ## Seeds: build_round() draws one map seed from the caller's RNG. Every attempt
 ## then uses its own RandomNumberGenerator derived from (map seed, round,
@@ -131,6 +134,10 @@ static func build_handmade() -> CityMap:
 	for i in keys.size():
 		m.survivor_starts.append(starts[keys[i]])
 		m.survivor_sizes.append(HANDMADE_SIZES[i % HANDMADE_SIZES.size()])
+	# Fixed seed: the training map always has the same buildings.
+	var layout_rng := RandomNumberGenerator.new()
+	layout_rng.seed = 1
+	CityLayout.build(m, layout_rng)
 	return m
 
 
@@ -224,7 +231,7 @@ static func _try_physarum(round_num: int, rng: RandomNumberGenerator, forced_cen
 		return null
 	_close_segments(m, _road_segments(m), closure_count_for(round_num), rng)
 	_place_pre_fires(m, pre_fire_count_for(round_num), rng)
-	return m if _layout_ok(m) else null
+	return _finish(m, rng)
 
 
 static func _place_safe_zone(m: CityMap, rng: RandomNumberGenerator) -> Rect2i:
@@ -828,7 +835,7 @@ static func _try_lattice(round_num: int, rng: RandomNumberGenerator) -> CityMap:
 		return null
 	_close_segments(m, _segments(xs, ys), closure_count_for(round_num), rng)
 	_place_pre_fires(m, pre_fire_count_for(round_num), rng)
-	return m if _layout_ok(m) else null
+	return _finish(m, rng)
 
 
 static func _line_positions(blocks: int, rng: RandomNumberGenerator) -> Array[int]:
@@ -919,6 +926,8 @@ static func _close_segments(m: CityMap, segments: Array, count: int, rng: Random
 			m.set_tile(p, CityMap.Tile.BUILDING)
 		if _layout_ok(m):
 			closed += 1
+			for p in seg:
+				m.road_closures[p] = true
 		else:
 			for p in seg:
 				m.set_tile(p, CityMap.Tile.ROAD)
@@ -948,6 +957,15 @@ static func _place_pre_fires(m: CityMap, count: int, rng: RandomNumberGenerator)
 			placed += 1
 		else:
 			m.remove_fire(p)
+
+
+## Final validation of a generated map; a valid map then gets its city plan.
+## The plan reads the tiles and changes none of them.
+static func _finish(m: CityMap, rng: RandomNumberGenerator) -> CityMap:
+	if not _layout_ok(m):
+		return null
+	CityLayout.build(m, rng)
+	return m
 
 
 ## Every group must have a robust route (a detour for any single blocked tile),

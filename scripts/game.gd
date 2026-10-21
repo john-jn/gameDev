@@ -8,6 +8,8 @@ extends Control
 ##   HazardManager                fires that cut active routes
 ##   ScoreKeeper                  transparent scoring
 ## The tablet UI is built in code so the scene file stays minimal.
+## The map's look is one VisualTheme, picked here (see `visual_style`) and
+## handed to MapView and the legend; nothing else depends on it.
 
 const COL_BG := Color("0a0f1a")
 const COL_BEZEL := Color("05080f")
@@ -27,15 +29,24 @@ const DIFFICULTY_NAMES := ["Training", "Easy", "Moderate", "Hard", "Severe", "Ex
 ## Small legend icon that reuses the map's own symbol painters.
 class Swatch extends Control:
 	var kind := ""
+	var visual_theme: VisualTheme
 
-	func _init(p_kind: String) -> void:
+	func _init(p_kind: String, p_theme: VisualTheme) -> void:
 		kind = p_kind
+		visual_theme = p_theme
 		custom_minimum_size = Vector2(20, 20)
 		mouse_filter = Control.MOUSE_FILTER_IGNORE
 
 	func _draw() -> void:
-		MapView.draw_legend_symbol(self, kind, Rect2(Vector2.ZERO, size), get_theme_default_font())
+		MapPainter.draw_legend_symbol(self, visual_theme, kind, Rect2(Vector2.ZERO, size), get_theme_default_font())
 
+
+## Map look at start-up; V switches between the two in game, and
+## `godot -- --visual=debug` (or `dispatch`) overrides it from the command line.
+@export var visual_style: VisualTheme.Style = VisualTheme.Style.DISPATCH_STYLE
+## Optional theme resource (.tres) used instead of the built-in preset whose
+## style it matches, e.g. one with art in its asset slots.
+@export var visual_theme_override: VisualTheme
 
 var rng := RandomNumberGenerator.new()
 var round_num := 1
@@ -53,8 +64,11 @@ var round_time := 0.0
 var plan_clock_start := 0.0  ## planning time is measured from round start / last dispatch
 var round_over := false
 var log_lines: Array[String] = []
+var visual_theme: VisualTheme
 
 var map_view: MapView
+var map_frame: PanelContainer
+var legend: GridContainer
 var lbl_round: Label
 var lbl_time: Label
 var lbl_plan: Label
@@ -82,7 +96,12 @@ func _ready() -> void:
 	for arg in OS.get_cmdline_user_args():
 		if arg.begins_with("--seed=") and arg.substr(7).is_valid_int():
 			rng.seed = arg.substr(7).to_int()
+		elif arg == "--visual=debug":
+			visual_style = VisualTheme.Style.DEBUG_SHAPES
+		elif arg == "--visual=dispatch":
+			visual_style = VisualTheme.Style.DISPATCH_STYLE
 	_build_ui()
+	set_visual_style(visual_style)
 	_start_round()
 
 
@@ -244,6 +263,8 @@ func _try_extend(p: Vector2i) -> void:
 		reason = "Route already reaches the SAFE zone. Dispatch it, or Undo."
 	elif map.is_fire(p):
 		reason = "Blocked: that road is on fire."
+	elif map.is_road_closure(p):
+		reason = "Road closed by rubble - take another street."
 	elif not map.is_street(p):
 		reason = "Buildings are impassable - stay on the roads."
 	elif not map.is_adjacent(last, p):
@@ -341,6 +362,9 @@ func _unhandled_input(event: InputEvent) -> void:
 			route.clear()
 		KEY_TAB:
 			_cycle_selection()
+		KEY_V:
+			var other: VisualTheme.Style = VisualTheme.Style.DEBUG_SHAPES if visual_style == VisualTheme.Style.DISPATCH_STYLE else VisualTheme.Style.DISPATCH_STYLE
+			set_visual_style(other)
 		_:
 			return
 	get_viewport().set_input_as_handled()
@@ -406,6 +430,30 @@ func _fmt_time(s: float) -> String:
 
 
 # --- UI refresh -------------------------------------------------------------------
+
+## Shows the map and legend in style `s`. Purely cosmetic: the round, routes
+## and score are untouched.
+func set_visual_style(s: VisualTheme.Style) -> void:
+	visual_style = s
+	if visual_theme_override != null and visual_theme_override.style == s:
+		visual_theme = visual_theme_override
+	else:
+		visual_theme = VisualTheme.for_style(s)
+	map_view.visual_theme = visual_theme
+	map_frame.add_theme_stylebox_override("panel", _style(visual_theme.map_bg, COL_PANEL_EDGE, 8, 1, 4))
+	for c in legend.get_children():
+		legend.remove_child(c)
+		c.queue_free()
+	var items := [["road", "Road"], ["building", "Building"], ["park", "Park"], ["safe", "Safe zone"],
+			["survivor", "Survivors"], ["route", "Your route"], ["fire", "Fire (blocked)"], ["smoke", "Smoke (-1 ppl)"]]
+	if s == VisualTheme.Style.DISPATCH_STYLE:
+		items.append(["closed", "Closed road"])
+	for item in items:
+		legend.add_child(Swatch.new(item[0], visual_theme))
+		var l := _label(item[1], 12, COL_TEXT)
+		l.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		legend.add_child(l)
+
 
 func _update_ui() -> void:
 	validation = {}
@@ -573,10 +621,9 @@ func _build_ui() -> void:
 	body.add_theme_constant_override("separation", 10)
 	vbox.add_child(body)
 
-	var map_frame := PanelContainer.new()
+	map_frame = PanelContainer.new()  # styled by set_visual_style()
 	map_frame.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	map_frame.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	map_frame.add_theme_stylebox_override("panel", _style(MapView.COL_MAP_BG, COL_PANEL_EDGE, 8, 1, 4))
 	body.add_child(map_frame)
 	var map_area := Control.new()
 	map_area.clip_contents = true
@@ -671,16 +718,10 @@ func _build_ui() -> void:
 
 	sv.add_child(HSeparator.new())
 	sv.add_child(_label("LEGEND", 12, COL_ACCENT))
-	var legend := GridContainer.new()
+	legend = GridContainer.new()  # filled by set_visual_style()
 	legend.columns = 4
 	legend.add_theme_constant_override("h_separation", 6)
 	legend.add_theme_constant_override("v_separation", 4)
-	for item in [["road", "Road"], ["building", "Building"], ["park", "Park"], ["safe", "Safe zone"],
-			["survivor", "Survivors"], ["route", "Your route"], ["fire", "Fire (blocked)"], ["smoke", "Smoke (-1 ppl)"]]:
-		legend.add_child(Swatch.new(item[0]))
-		var l := _label(item[1], 12, COL_TEXT)
-		l.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		legend.add_child(l)
 	sv.add_child(legend)
 
 	sv.add_child(HSeparator.new())
@@ -689,7 +730,7 @@ func _build_ui() -> void:
 	sv.add_child(lbl_log)
 	var keys := _wrap_label(11, COL_DIM)
 	sv.add_child(keys)
-	keys.text = "Keys: Enter dispatch, Z/Backspace undo, C clear, Tab next group, Esc deselect. Tap an earlier route tile to cut back to it."
+	keys.text = "Keys: Enter dispatch, Z/Backspace undo, C clear, Tab next group, Esc deselect, V map style. Tap an earlier route tile to cut back to it."
 
 
 func _style(bg_color: Color, edge: Color, radius: int, border: int, pad: int) -> StyleBoxFlat:
