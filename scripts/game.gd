@@ -12,10 +12,12 @@ extends Control
 ## handed to MapView and the legend; nothing else depends on it.
 
 const COL_BG := Color("0a0f1a")
-const COL_BEZEL := Color("05080f")
-const COL_BEZEL_EDGE := Color("223047")
-const COL_PANEL := Color("111a2b")
-const COL_PANEL_EDGE := Color("24324a")
+const COL_BEZEL := Color("12161d")
+const COL_BEZEL_EDGE := Color("6a7588")
+const COL_PANEL := Color("141c2b")
+const COL_PANEL_EDGE := Color("3a475c")
+const COL_MODULE := Color("1a2230")
+const COL_MODULE_EDGE := Color("46546b")
 const COL_TEXT := Color("d7e1f0")
 const COL_DIM := Color("7f8ea8")
 const COL_ACCENT := Color("38c6f4")
@@ -23,6 +25,8 @@ const COL_ALERT := Color("ff4d3d")
 const COL_OK := Color("39d98a")
 const COL_WARN := Color("ffb020")
 const LOG_LINES := 6
+const LOG_SHOWN := 3
+const MAX_STRIKES := 6
 const DIFFICULTY_NAMES := ["Training", "Easy", "Moderate", "Hard", "Severe", "Extreme"]
 
 
@@ -73,11 +77,16 @@ var lbl_round: Label
 var lbl_time: Label
 var lbl_plan: Label
 var lbl_score: Label
-var lbl_group: Label
 var lbl_route: Label
 var lbl_hint: Label
-var lbl_groups: Label
 var lbl_log: Label
+var group_box: VBoxContainer
+var group_leds: Array[UiWidgets.Led] = []
+var group_btns: Array[Button] = []
+var route_led: UiWidgets.Led
+var strike_leds: Array[UiWidgets.Led] = []
+var help_box: VBoxContainer
+var alert_led: UiWidgets.Led
 var btn_dispatch: Button
 var btn_undo: Button
 var btn_clear: Button
@@ -85,6 +94,13 @@ var alert_panel: PanelContainer
 var lbl_alert: Label
 var result_panel: PanelContainer
 var lbl_result_title: Label
+var lbl_result_sub: Label
+var lbl_result_saved: Label
+var lbl_result_total: Label
+var result_banner: PanelContainer
+var result_led: UiWidgets.Led
+var result_stars: Array[UiWidgets.Led] = []
+var result_pips: HFlowContainer
 var result_grid: GridContainer
 var lbl_result_note: Label
 var btn_next: Button
@@ -122,6 +138,7 @@ func _start_round() -> void:
 	round_over = false
 	log_lines.clear()
 	map_view.reset_effects()
+	_build_group_rows()
 	result_panel.visible = false
 	alert_panel.visible = false
 	_log("Round %d (%s): %d groups, %d fire(s) on map, %d timed alert(s) incoming." % [
@@ -400,18 +417,61 @@ func _difficulty_name() -> String:
 func _state_text(g: SurvivorGroup) -> String:
 	match g.state:
 		SurvivorGroup.State.WAITING:
-			return "waiting for route"
+			return "needs a route"
 		SurvivorGroup.State.MOVING:
 			if g.halt_requested:
-				return "HALTING"
-			return "en route %d/%d" % [g.index, g.path.size() - 1]
+				return "stopping..."
+			return "on the way"
 		SurvivorGroup.State.BLOCKED:
-			return "BLOCKED - needs detour"
+			return "FIRE! needs detour"
 		SurvivorGroup.State.DELIVERED:
-			return "SAFE"
+			return "safe"
 		SurvivorGroup.State.LOST:
-			return "LOST"
+			return "lost"
 	return ""
+
+
+func _group_led_color(g: SurvivorGroup) -> Color:
+	if g == selected:
+		return COL_ACCENT
+	match g.state:
+		SurvivorGroup.State.WAITING:
+			return COL_WARN
+		SurvivorGroup.State.MOVING:
+			return Color("5b8cff")
+		SurvivorGroup.State.BLOCKED:
+			return COL_ALERT
+		SurvivorGroup.State.DELIVERED:
+			return COL_OK
+	return COL_DIM
+
+
+## One LED + select button per group; rebuilt each round (the group count changes).
+func _build_group_rows() -> void:
+	for c in group_box.get_children():
+		group_box.remove_child(c)
+		c.queue_free()
+	group_leds.clear()
+	group_btns.clear()
+	for g in groups:
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 8)
+		var led := UiWidgets.Led.new(18.0)
+		led.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		row.add_child(led)
+		var b := _button("", Color("232d40"), _on_group_row_pressed.bind(g))
+		b.alignment = HORIZONTAL_ALIGNMENT_LEFT
+		b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		b.add_theme_font_size_override("font_size", 14)
+		row.add_child(b)
+		group_box.add_child(row)
+		group_leds.append(led)
+		group_btns.append(b)
+
+
+func _on_group_row_pressed(g: SurvivorGroup) -> void:
+	if not round_over:
+		_select_group(g)
 
 
 func _log(text: String) -> void:
@@ -468,68 +528,64 @@ func _update_ui() -> void:
 
 	# Top bar
 	lbl_round.text = "ROUND %d  |  %s" % [round_num, _difficulty_name().to_upper()]
-	lbl_time.text = "TIME %s" % _fmt_time(round_time)
-	lbl_score.text = "SCORE %d" % (banked_score + (0 if round_over else scorer.total()))
+	lbl_time.text = _fmt_time(round_time)
+	lbl_score.text = "%d" % (banked_score + (0 if round_over else scorer.total()))
 	if not round_over and _first_group_in_state(SurvivorGroup.State.WAITING) != null:
 		var s := round_time - plan_clock_start
 		var b := ScoreKeeper.planning_bonus(s)
-		lbl_plan.text = "PLAN CLOCK %.1fs  (+%d)" % [s, b]
+		lbl_plan.text = "%.1fs  +%d" % [s, b]
 		lbl_plan.add_theme_color_override("font_color", COL_OK if b > 40 else (COL_WARN if b > 0 else COL_ALERT))
 	else:
-		lbl_plan.text = "PLAN CLOCK  --"
+		lbl_plan.text = "--"
 		lbl_plan.add_theme_color_override("font_color", COL_DIM)
 
-	# Selected group
-	if selected == null:
-		lbl_group.text = "None selected.\nTap a yellow circle on the map\n(or press Tab)."
-	else:
-		var shortest := map.shortest_length(selected.tile)
-		var status := "Waiting" if selected.state == SurvivorGroup.State.WAITING else "HALTED - needs a detour"
-		lbl_group.text = "Group %s  -  %d survivors\n%s at (%d, %d)\nShortest route available: %d tiles" % [
-			selected.label, selected.survivors, status, selected.tile.x, selected.tile.y, shortest]
+	# Group module: one LED row per group
+	for i in groups.size():
+		var g := groups[i]
+		var blink_off := g.state == SurvivorGroup.State.BLOCKED and fmod(round_time, 0.6) > 0.3
+		group_leds[i].set_state(_group_led_color(g), g.state != SurvivorGroup.State.LOST and not blink_off)
+		group_btns[i].text = "%sGroup %s   %d/%d people   %s" % [
+			"> " if g == selected else "", g.label, g.survivors, g.initial_survivors, _state_text(g)]
+		group_btns[i].disabled = not g.can_plan()
+	for i in strike_leds.size():
+		strike_leds[i].set_state(COL_ALERT, i < scorer.lost)
 
-	# Route status
+	# Route module: one LED, one short line
 	var can_dispatch := false
+	var route_color := COL_DIM
+	var route_lit := false
 	if selected == null:
-		lbl_route.text = "No route."
+		lbl_route.text = "No team selected"
 	else:
-		var lines: Array[String] = []
 		var length: int = validation["length"]
-		lines.append("Length: %d tile(s)" % length)
+		var shortest := map.shortest_length(selected.tile)
+		route_lit = true
 		if not validation["valid"]:
-			lines.append("INVALID: " + str(validation["reason"]))
+			route_color = COL_ALERT
+			lbl_route.text = "Route not valid"
 		elif validation["complete"]:
-			var shortest := map.shortest_length(selected.tile)
-			var eff := float(shortest) / float(maxi(length, 1))
-			lines.append("READY - reaches SAFE zone")
-			lines.append("Efficiency: %d%% of shortest" % roundi(eff * 100.0))
+			route_color = COL_OK
+			lbl_route.text = "Route ready!  %d tiles, %d%% direct" % [length, roundi(100.0 * shortest / maxi(length, 1))]
 			can_dispatch = true
 		else:
-			lines.append(str(validation["reason"]))
+			route_color = COL_WARN
+			lbl_route.text = "Keep going to the SAFE zone  (%d tiles)" % length
 		if validation["smoke"] > 0:
-			lines.append("Smoke tiles: %d  (= %d casualties)" % [validation["smoke"], validation["smoke"]])
-		if selected.state == SurvivorGroup.State.BLOCKED:
-			var rs := round_time - selected.blocked_since
-			lines.append("Response bonus if sent now: +%d" % ScoreKeeper.response_bonus(rs))
-		else:
-			lines.append("Planning bonus if sent now: +%d" % ScoreKeeper.planning_bonus(round_time - plan_clock_start))
-		lbl_route.text = "\n".join(PackedStringArray(lines))
+			lbl_route.text += "\nSmoke x%d = -%d people" % [validation["smoke"], validation["smoke"]]
+	route_led.set_state(route_color, route_lit)
 	btn_dispatch.disabled = not can_dispatch
+	btn_dispatch.modulate = Color.WHITE.lerp(Color(1.3, 1.3, 1.3), 0.5 + 0.5 * sin(round_time * 6.0)) if can_dispatch else Color.WHITE
 	if selected != null and selected.state == SurvivorGroup.State.BLOCKED:
-		btn_dispatch.text = "DISPATCH DETOUR  (Enter)"
+		btn_dispatch.text = "DISPATCH DETOUR"
 	elif selected != null:
-		btn_dispatch.text = "DISPATCH GROUP %s  (Enter)" % selected.label
+		btn_dispatch.text = "DISPATCH GROUP %s" % selected.label
 	else:
-		btn_dispatch.text = "DISPATCH  (Enter)"
+		btn_dispatch.text = "DISPATCH"
 	btn_undo.disabled = selected == null or route.size() <= 1
 	btn_clear.disabled = btn_undo.disabled
 
-	# Group roster and log
-	var roster: Array[String] = []
-	for g in groups:
-		roster.append("%s   %d/%d   %s" % [g.label, g.survivors, g.initial_survivors, _state_text(g)])
-	lbl_groups.text = "\n".join(PackedStringArray(roster))
-	lbl_log.text = "\n".join(PackedStringArray(log_lines))
+	# Ops log (latest lines only)
+	lbl_log.text = "\n".join(PackedStringArray(log_lines.slice(maxi(0, log_lines.size() - LOG_SHOWN))))
 
 	# Hazard alert banner
 	var blocked: SurvivorGroup = null
@@ -540,37 +596,66 @@ func _update_ui() -> void:
 	alert_panel.visible = blocked != null and not round_over
 	if blocked != null:
 		var rs := round_time - blocked.blocked_since
-		var action := "Group halting..." if blocked.state == SurvivorGroup.State.MOVING else "Draw a detour from its position."
-		lbl_alert.text = "!! ROUTE BLOCKED - fire at (%d, %d) cuts Group %s's route. %s   Response %.1fs (+%d)" % [
-			blocked.blocking_tile.x, blocked.blocking_tile.y, blocked.label, action, rs, ScoreKeeper.response_bonus(rs)]
-		alert_panel.modulate.a = 0.8 + 0.2 * sin(round_time * 8.0)
+		var action := "halting..." if blocked.state == SurvivorGroup.State.MOVING else "draw a detour"
+		lbl_alert.text = "ROUTE BLOCKED  -  Group %s: %s   (%.1fs, +%d)" % [
+			blocked.label, action, rs, ScoreKeeper.response_bonus(rs)]
+		alert_led.set_state(COL_ALERT, fmod(round_time, 0.5) < 0.25)
+		alert_panel.modulate.a = 0.85 + 0.15 * sin(round_time * 8.0)
 
 
 func _show_results(total_survivors: int) -> void:
-	lbl_result_title.text = "EVACUATION COMPLETE" if last_round_success else "EVACUATION FAILED"
-	lbl_result_title.add_theme_color_override("font_color", COL_OK if last_round_success else COL_ALERT)
+	var ok := last_round_success
+	var tone := COL_OK if ok else COL_ALERT
+	lbl_result_title.text = "ROUND COMPLETE" if ok else "ROUND FAILED"
+	lbl_result_title.add_theme_color_override("font_color", tone)
+	lbl_result_sub.text = "ROUND %d  |  %s" % [round_num, _difficulty_name().to_upper()]
+	result_led.set_state(tone, true)
+	result_panel.add_theme_stylebox_override("panel", _style(Color(0.04, 0.07, 0.12, 0.97), tone, 14, 4, 0))
+	var banner := _style(Color("0f2c1f") if ok else Color("33100f"), tone, 10, 0, 14)
+	banner.corner_radius_bottom_left = 0
+	banner.corner_radius_bottom_right = 0
+	result_banner.add_theme_stylebox_override("panel", banner)
+
+	lbl_result_saved.text = "%d / %d" % [scorer.delivered, total_survivors]
+	lbl_result_saved.add_theme_color_override("font_color", tone)
+	# Star rating: 3 = everyone saved, 2 = three quarters or more, 1 = cleared, 0 = failed.
+	var ratio := float(scorer.delivered) / float(maxi(total_survivors, 1))
+	var stars := 0 if not ok else (3 if ratio >= 1.0 else (2 if ratio >= 0.75 else 1))
+	for i in result_stars.size():
+		result_stars[i].set_state(COL_WARN, i < stars)
+	for c in result_pips.get_children():
+		c.queue_free()
+	for i in total_survivors:
+		var pip := UiWidgets.Led.new(12.0)
+		pip.set_state(COL_OK if i < scorer.delivered else COL_ALERT, true)
+		result_pips.add_child(pip)
+
 	for c in result_grid.get_children():
 		c.queue_free()
 	for row in scorer.breakdown():
-		_add_result_row(row[0], row[1], row[2], false)
-	_add_result_row("ROUND TOTAL", "%d / %d survivors saved" % [scorer.delivered, total_survivors], scorer.total(), true)
-	if last_round_success:
-		lbl_result_note.text = "Round score banked. Total score: %d\nNext round: bigger city, more groups and hazards." % banked_score
+		_add_result_row(row[0], row[1], row[2])
+	lbl_result_total.text = "%+d" % scorer.total()
+	lbl_result_total.add_theme_color_override("font_color", COL_WARN if scorer.total() >= 0 else COL_ALERT)
+	if ok:
+		lbl_result_note.text = "Total score: %d  -  the next round has a bigger city and more fires." % banked_score
 		btn_next.text = "NEXT ROUND  >>"
 	else:
-		lbl_result_note.text = "Fewer than half the survivors reached safety.\nRound points are not banked. Total score: %d" % banked_score
-		btn_next.text = "RETRY ROUND"
+		lbl_result_note.text = "Save at least half the people to pass. This round's points don't count."
+		btn_next.text = "TRY AGAIN"
 	result_panel.visible = true
+	result_panel.modulate.a = 0.0
+	create_tween().tween_property(result_panel, "modulate:a", 1.0, 0.3)
 
 
-func _add_result_row(title: String, detail: String, pts: int, bold: bool) -> void:
-	var fs := 16 if bold else 14
-	result_grid.add_child(_label(title, fs, COL_TEXT))
-	result_grid.add_child(_label(detail, 12, COL_DIM))
+func _add_result_row(title: String, detail: String, pts: int) -> void:
+	result_grid.add_child(_label(title, 15, COL_TEXT))
+	var d := _label(detail, 12, COL_DIM)
+	d.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	result_grid.add_child(d)
 	var col := COL_OK if pts > 0 else (COL_ALERT if pts < 0 else COL_DIM)
-	var l := _label("%+d" % pts, fs, col)
+	var l := _label("%+d" % pts, 15, col)
 	l.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-	l.custom_minimum_size.x = 70
+	l.custom_minimum_size.x = 60
 	result_grid.add_child(l)
 
 
@@ -578,42 +663,87 @@ func _add_result_row(title: String, detail: String, pts: int, bold: bool) -> voi
 
 func _build_ui() -> void:
 	set_anchors_preset(Control.PRESET_FULL_RECT)
+	# Rajdhani (SIL OFL): a squared, technical face for the whole tablet UI.
+	var ui_theme := Theme.new()
+	var font_medium := load("res://assets/fonts/Rajdhani-Medium.ttf") as Font
+	var font_bold := load("res://assets/fonts/Rajdhani-Bold.ttf") as Font
+	if font_medium != null:
+		ui_theme.default_font = font_medium
+		ui_theme.default_font_size = 16
+		if font_bold != null:
+			ui_theme.set_font("font", "Button", font_bold)
+			ui_theme.set_font_size("font_size", "Button", 18)
+	theme = ui_theme
 	var bg := ColorRect.new()
-	bg.color = COL_BG
+	bg.color = Color("06080c")
 	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
 	add_child(bg)
 
 	# Tablet bezel
 	var bezel := PanelContainer.new()
 	bezel.set_anchors_preset(Control.PRESET_FULL_RECT)
-	bezel.offset_left = 10
-	bezel.offset_top = 10
-	bezel.offset_right = -10
-	bezel.offset_bottom = -10
-	bezel.add_theme_stylebox_override("panel", _style(COL_BEZEL, COL_BEZEL_EDGE, 22, 3, 14))
+	bezel.offset_left = 8
+	bezel.offset_top = 8
+	bezel.offset_right = -8
+	bezel.offset_bottom = -8
+	# Thick rounded tablet frame: extra room at the top and bottom for the camera and home bar.
+	var frame_style := _style(COL_BEZEL, COL_BEZEL_EDGE, 36, 3, 16)
+	frame_style.content_margin_top = 30
+	frame_style.content_margin_bottom = 30
+	bezel.add_theme_stylebox_override("panel", frame_style)
 	add_child(bezel)
+	# Front camera and home bar, drawn on the frame but ignoring input.
+	var hw := Control.new()
+	hw.set_anchors_preset(Control.PRESET_FULL_RECT)
+	hw.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(hw)
+	var cam := UiWidgets.Led.new(9.0)
+	cam.set_state(Color("3a6a9a"), false)
+	hw.add_child(cam)
+	cam.set_anchors_and_offsets_preset(Control.PRESET_CENTER_TOP, Control.PRESET_MODE_KEEP_SIZE, 0)
+	cam.offset_top = 16
+	cam.offset_bottom = 25
+	var home := PanelContainer.new()
+	home.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	home.custom_minimum_size = Vector2(140, 5)
+	home.add_theme_stylebox_override("panel", _style(Color("56627a"), Color("56627a"), 3, 0, 0))
+	hw.add_child(home)
+	home.set_anchors_and_offsets_preset(Control.PRESET_CENTER_BOTTOM, Control.PRESET_MODE_MINSIZE, 0)
+	home.offset_top = -24
+	home.offset_bottom = -19
+	# The screen itself, inset in the frame.
+	var screen := PanelContainer.new()
+	screen.add_theme_stylebox_override("panel", _style(COL_BG, Color("0b0f17"), 14, 2, 10))
+	screen.clip_contents = true
+	bezel.add_child(screen)
 	var vbox := VBoxContainer.new()
 	vbox.add_theme_constant_override("separation", 10)
-	bezel.add_child(vbox)
+	screen.add_child(vbox)
 
 	# Top bar
 	var top := PanelContainer.new()
-	top.add_theme_stylebox_override("panel", _style(COL_PANEL, COL_PANEL_EDGE, 8, 1, 10))
+	top.add_theme_stylebox_override("panel", _style(COL_PANEL, COL_PANEL_EDGE, 6, 3, 8))
 	vbox.add_child(top)
 	var top_h := HBoxContainer.new()
-	top_h.add_theme_constant_override("separation", 28)
+	top_h.add_theme_constant_override("separation", 14)
 	top.add_child(top_h)
 	top_h.add_child(_label("EVAC GRID", 22, COL_ACCENT))
-	top_h.add_child(_label("RESCUE OPERATIONS", 12, COL_DIM))
+	top_h.add_child(_label("RESCUE OPS", 12, COL_DIM))
 	var spacer := Control.new()
 	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	top_h.add_child(spacer)
-	lbl_round = _label("ROUND 1", 16, COL_TEXT)
-	lbl_plan = _label("PLAN CLOCK", 16, COL_OK)
-	lbl_time = _label("TIME", 16, COL_TEXT)
-	lbl_score = _label("SCORE 0", 18, COL_WARN)
-	for l in [lbl_round, lbl_plan, lbl_time, lbl_score]:
-		top_h.add_child(l)
+	lbl_round = UiWidgets.Lcd.new("ROUND 1", 16, COL_TEXT)
+	lbl_plan = UiWidgets.Lcd.new("PLAN --", 18, COL_OK)
+	lbl_time = UiWidgets.Lcd.new("00:00.0", 24, COL_ALERT)
+	lbl_score = UiWidgets.Lcd.new("0", 20, COL_WARN)
+	lbl_plan.custom_minimum_size.x = 200
+	lbl_time.custom_minimum_size.x = 130
+	lbl_score.custom_minimum_size.x = 120
+	lbl_round.custom_minimum_size.x = 170
+	for pair in [["PLAN", lbl_plan], ["TIME", lbl_time], ["SCORE", lbl_score], ["", lbl_round]]:
+		if pair[0] != "":
+			top_h.add_child(_label(pair[0], 11, COL_DIM))
+		top_h.add_child(pair[1])
 
 	# Body: map + side panel
 	var body := HBoxContainer.new()
@@ -640,11 +770,19 @@ func _build_ui() -> void:
 	alert_panel.offset_right = -12
 	alert_panel.offset_top = 10
 	alert_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	alert_panel.add_theme_stylebox_override("panel", _style(Color("5c0d12"), COL_ALERT, 6, 2, 10))
-	lbl_alert = _label("", 15, Color.WHITE)
+	alert_panel.add_theme_stylebox_override("panel", _style(Color("5c0d12"), COL_ALERT, 6, 3, 10))
+	var alert_h := HBoxContainer.new()
+	alert_h.add_theme_constant_override("separation", 12)
+	alert_h.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	alert_panel.add_child(alert_h)
+	alert_led = UiWidgets.Led.new(22.0)
+	alert_led.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	alert_h.add_child(alert_led)
+	lbl_alert = _label("", 17, Color.WHITE)
 	lbl_alert.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	lbl_alert.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	lbl_alert.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	alert_panel.add_child(lbl_alert)
+	alert_h.add_child(lbl_alert)
 	alert_panel.visible = false
 	map_area.add_child(alert_panel)
 
@@ -652,85 +790,190 @@ func _build_ui() -> void:
 	result_panel.set_anchors_preset(Control.PRESET_CENTER)
 	result_panel.grow_horizontal = Control.GROW_DIRECTION_BOTH
 	result_panel.grow_vertical = Control.GROW_DIRECTION_BOTH
-	result_panel.custom_minimum_size = Vector2(500, 0)
-	result_panel.add_theme_stylebox_override("panel", _style(Color(0.04, 0.07, 0.12, 0.97), COL_ACCENT, 10, 2, 20))
+	result_panel.custom_minimum_size = Vector2(560, 0)
+	result_panel.add_theme_stylebox_override("panel", _style(Color(0.04, 0.07, 0.12, 0.97), COL_ACCENT, 14, 4, 0))
 	var rv := VBoxContainer.new()
-	rv.add_theme_constant_override("separation", 12)
+	rv.add_theme_constant_override("separation", 0)
 	result_panel.add_child(rv)
-	lbl_result_title = _label("EVACUATION COMPLETE", 24, COL_OK)
-	lbl_result_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	rv.add_child(lbl_result_title)
+
+	# Banner: status light, verdict and round name
+	result_banner = PanelContainer.new()
+	rv.add_child(result_banner)
+	var banner_h := HBoxContainer.new()
+	banner_h.add_theme_constant_override("separation", 12)
+	result_banner.add_child(banner_h)
+	result_led = UiWidgets.Led.new(22.0)
+	result_led.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	banner_h.add_child(result_led)
+	lbl_result_title = _label("ROUND COMPLETE", 28, COL_OK)
+	lbl_result_title.add_theme_font_override("font", load("res://assets/fonts/Rajdhani-Bold.ttf") as Font)
+	banner_h.add_child(lbl_result_title)
+	var banner_gap := Control.new()
+	banner_gap.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	banner_h.add_child(banner_gap)
+	lbl_result_sub = _label("", 13, COL_DIM)
+	banner_h.add_child(lbl_result_sub)
+
+	var body_box := VBoxContainer.new()
+	body_box.add_theme_constant_override("separation", 12)
+	var body_margin := MarginContainer.new()
+	for side_name in ["left", "right", "top", "bottom"]:
+		body_margin.add_theme_constant_override("margin_" + side_name, 18)
+	body_margin.add_child(body_box)
+	rv.add_child(body_margin)
+
+	# Hero: people saved readout and star rating
+	var hero := HBoxContainer.new()
+	hero.add_theme_constant_override("separation", 16)
+	body_box.add_child(hero)
+	var saved_box := VBoxContainer.new()
+	saved_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	hero.add_child(saved_box)
+	saved_box.add_child(_label("PEOPLE SAVED", 11, COL_DIM))
+	lbl_result_saved = UiWidgets.Lcd.new("0 / 0", 34, COL_OK)
+	saved_box.add_child(lbl_result_saved)
+	var rating_box := VBoxContainer.new()
+	hero.add_child(rating_box)
+	rating_box.add_child(_label("RATING", 11, COL_DIM))
+	var stars_h := HBoxContainer.new()
+	stars_h.add_theme_constant_override("separation", 8)
+	stars_h.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	stars_h.alignment = BoxContainer.ALIGNMENT_CENTER
+	rating_box.add_child(stars_h)
+	for i in 3:
+		var star := UiWidgets.Led.new(28.0)
+		stars_h.add_child(star)
+		result_stars.append(star)
+	result_pips = HFlowContainer.new()
+	result_pips.add_theme_constant_override("h_separation", 4)
+	result_pips.add_theme_constant_override("v_separation", 4)
+	body_box.add_child(result_pips)
+
+	# Score lines
+	var rows_frame := PanelContainer.new()
+	rows_frame.add_theme_stylebox_override("panel", _style(COL_MODULE, COL_MODULE_EDGE, 6, 2, 12))
+	body_box.add_child(rows_frame)
 	result_grid = GridContainer.new()
 	result_grid.columns = 3
-	result_grid.add_theme_constant_override("h_separation", 18)
-	result_grid.add_theme_constant_override("v_separation", 6)
-	rv.add_child(result_grid)
+	result_grid.add_theme_constant_override("h_separation", 16)
+	result_grid.add_theme_constant_override("v_separation", 4)
+	rows_frame.add_child(result_grid)
+
+	# Round score readout
+	var total_h := HBoxContainer.new()
+	total_h.add_theme_constant_override("separation", 12)
+	body_box.add_child(total_h)
+	total_h.add_child(_label("ROUND SCORE", 16, COL_TEXT))
+	var total_gap := Control.new()
+	total_gap.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	total_h.add_child(total_gap)
+	lbl_result_total = UiWidgets.Lcd.new("+0", 30, COL_WARN)
+	lbl_result_total.custom_minimum_size.x = 170
+	total_h.add_child(lbl_result_total)
+
 	lbl_result_note = _label("", 13, COL_DIM)
 	lbl_result_note.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	rv.add_child(lbl_result_note)
+	body_box.add_child(lbl_result_note)
 	btn_next = _button("NEXT ROUND  >>", Color("1c7c54"), _on_next_pressed)
-	btn_next.custom_minimum_size.y = 46
-	rv.add_child(btn_next)
+	btn_next.custom_minimum_size.y = 52
+	btn_next.add_theme_stylebox_override("normal", _style(Color("1c7c54"), Color("5be3a0"), 8, 3, 8))
+	btn_next.add_theme_stylebox_override("hover", _style(Color("23956a"), Color("8cf0bf"), 8, 3, 8))
+	btn_next.add_theme_stylebox_override("pressed", _style(Color("14583c"), Color("5be3a0"), 8, 3, 8))
+	body_box.add_child(btn_next)
 	result_panel.visible = false
 	map_area.add_child(result_panel)
 
-	# Side panel
+	# Side panel: stacked control-unit modules
 	var side := PanelContainer.new()
-	side.custom_minimum_size = Vector2(310, 0)
-	side.add_theme_stylebox_override("panel", _style(COL_PANEL, COL_PANEL_EDGE, 8, 1, 12))
+	side.custom_minimum_size = Vector2(320, 0)
+	side.add_theme_stylebox_override("panel", _style(COL_PANEL, COL_PANEL_EDGE, 6, 3, 8))
 	body.add_child(side)
 	var scroll := ScrollContainer.new()
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	side.add_child(scroll)
 	var sv := VBoxContainer.new()
 	sv.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	sv.add_theme_constant_override("separation", 6)
+	sv.add_theme_constant_override("separation", 8)
 	scroll.add_child(sv)
 
-	sv.add_child(_label("SELECTED GROUP", 12, COL_ACCENT))
-	lbl_group = _wrap_label(13, COL_TEXT)
-	sv.add_child(lbl_group)
-	sv.add_child(HSeparator.new())
-	sv.add_child(_label("ROUTE", 12, COL_ACCENT))
-	lbl_route = _wrap_label(13, COL_TEXT)
-	sv.add_child(lbl_route)
-	lbl_hint = _wrap_label(13, COL_ACCENT)
-	lbl_hint.custom_minimum_size.y = 36
-	sv.add_child(lbl_hint)
+	var mg := _add_module(sv, "YOUR TEAMS")
+	group_box = VBoxContainer.new()
+	group_box.add_theme_constant_override("separation", 4)
+	mg.add_child(group_box)
+
+	# Route module
+	var mr := _add_module(sv, "PLAN THE ROUTE")
+	var route_row := HBoxContainer.new()
+	route_row.add_theme_constant_override("separation", 8)
+	mr.add_child(route_row)
+	route_led = UiWidgets.Led.new(20.0)
+	route_led.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	route_row.add_child(route_led)
+	lbl_route = _wrap_label(14, COL_TEXT)
+	route_row.add_child(lbl_route)
+	lbl_hint = _wrap_label(12, COL_ACCENT)
+	lbl_hint.custom_minimum_size.y = 34
+	mr.add_child(lbl_hint)
 
 	btn_dispatch = _button("DISPATCH", Color("1c7c54"), _dispatch)
-	btn_dispatch.custom_minimum_size.y = 48
-	btn_dispatch.add_theme_font_size_override("font_size", 16)
-	sv.add_child(btn_dispatch)
+	btn_dispatch.custom_minimum_size.y = 64
+	btn_dispatch.add_theme_font_size_override("font_size", 20)
+	btn_dispatch.add_theme_stylebox_override("normal", _style(Color("1c7c54"), Color("5be3a0"), 8, 4, 8))
+	btn_dispatch.add_theme_stylebox_override("hover", _style(Color("23956a"), Color("8cf0bf"), 8, 4, 8))
+	btn_dispatch.add_theme_stylebox_override("pressed", _style(Color("14583c"), Color("5be3a0"), 8, 4, 8))
+	btn_dispatch.add_theme_stylebox_override("disabled", _style(Color("19212e"), Color("2c384c"), 8, 4, 8))
+	mr.add_child(btn_dispatch)
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation", 6)
-	btn_undo = _button("UNDO (Z)", Color("2c3c58"), _undo)
-	btn_clear = _button("CLEAR (C)", Color("2c3c58"), _clear_route)
+	btn_undo = _button("UNDO", Color("2c3c58"), _undo)
+	btn_clear = _button("CLEAR", Color("2c3c58"), _clear_route)
 	for b in [btn_undo, btn_clear]:
 		b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		row.add_child(b)
-	sv.add_child(row)
+	mr.add_child(row)
 
-	sv.add_child(HSeparator.new())
-	sv.add_child(_label("GROUPS", 12, COL_ACCENT))
-	lbl_groups = _wrap_label(13, COL_TEXT)
-	sv.add_child(lbl_groups)
+	# Losses module: one red light per survivor lost this round
+	var ml := _add_module(sv, "PEOPLE LOST")
+	var strikes := HBoxContainer.new()
+	strikes.add_theme_constant_override("separation", 10)
+	ml.add_child(strikes)
+	for i in MAX_STRIKES:
+		var led := UiWidgets.Led.new(18.0)
+		strikes.add_child(led)
+		strike_leds.append(led)
 
-	sv.add_child(HSeparator.new())
-	sv.add_child(_label("LEGEND", 12, COL_ACCENT))
+	# Ops log module
+	var mo := _add_module(sv, "OPS LOG")
+	lbl_log = _wrap_label(11, COL_DIM)
+	mo.add_child(lbl_log)
+
+	# Help (legend + keys), hidden until asked for
+	var btn_help := _button("? LEGEND / KEYS", Color("2c3c58"), func() -> void: help_box.visible = not help_box.visible)
+	sv.add_child(btn_help)
+	help_box = VBoxContainer.new()
+	help_box.add_theme_constant_override("separation", 6)
+	help_box.visible = false
+	sv.add_child(help_box)
 	legend = GridContainer.new()  # filled by set_visual_style()
 	legend.columns = 4
 	legend.add_theme_constant_override("h_separation", 6)
 	legend.add_theme_constant_override("v_separation", 4)
-	sv.add_child(legend)
-
-	sv.add_child(HSeparator.new())
-	sv.add_child(_label("OPS LOG", 12, COL_ACCENT))
-	lbl_log = _wrap_label(11, COL_DIM)
-	sv.add_child(lbl_log)
+	help_box.add_child(legend)
 	var keys := _wrap_label(11, COL_DIM)
-	sv.add_child(keys)
 	keys.text = "Keys: Enter dispatch, Z/Backspace undo, C clear, Tab next group, Esc deselect, V map style. Tap an earlier route tile to cut back to it."
+	help_box.add_child(keys)
+
+
+## A framed control-unit module with a title; returns the box to fill.
+func _add_module(parent: Control, title: String) -> VBoxContainer:
+	var frame := PanelContainer.new()
+	frame.add_theme_stylebox_override("panel", _style(COL_MODULE, COL_MODULE_EDGE, 4, 2, 8))
+	parent.add_child(frame)
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 6)
+	frame.add_child(box)
+	box.add_child(_label(title, 11, COL_ACCENT))
+	return box
 
 
 func _style(bg_color: Color, edge: Color, radius: int, border: int, pad: int) -> StyleBoxFlat:
@@ -746,7 +989,7 @@ func _style(bg_color: Color, edge: Color, radius: int, border: int, pad: int) ->
 func _label(text: String, font_size: int, color: Color) -> Label:
 	var l := Label.new()
 	l.text = text
-	l.add_theme_font_size_override("font_size", font_size)
+	l.add_theme_font_size_override("font_size", font_size + 2)
 	l.add_theme_color_override("font_color", color)
 	l.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	return l

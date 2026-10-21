@@ -85,12 +85,12 @@ func total() -> int:
 ## Rows of [label, detail, points] for the result screen.
 func breakdown() -> Array:
 	return [
-		["Survivors rescued", "%d x %d" % [delivered, RESCUE_PER_SURVIVOR], rescue],
-		["Route efficiency", "%d group(s), shortest / drawn" % groups_delivered, efficiency],
-		["Planning speed", _times_text(plan_times, "dispatch"), planning],
-		["Hazard response", _times_text(response_times, "detour"), response],
-		["Casualties", "%d x -%d" % [lost, CASUALTY_PENALTY], casualty],
-		["Round clear bonus", "%d per round" % CLEAR_BONUS_PER_ROUND if clear_bonus > 0 else "not earned", clear_bonus],
+		["People saved", "%d" % delivered, rescue],
+		["Short routes", "direct paths", efficiency],
+		["Fast planning", "sent quickly", planning],
+		["Quick detours", "after a fire", response],
+		["People lost", "%d" % lost, casualty],
+		["Round bonus", "for clearing it" if clear_bonus > 0 else "save half to earn", clear_bonus],
 	]
 
 

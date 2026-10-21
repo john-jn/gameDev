@@ -489,7 +489,7 @@ func test_round_flow() -> void:
 	game._process(0.05)
 	check(game.round_over and not game.last_round_success, "losing every group should fail the round")
 	check(game.banked_score == banked, "a failed round must not bank points")
-	check(game.btn_next.text.begins_with("RETRY"), "failed round should offer Retry")
+	check(game.btn_next.text.begins_with("TRY AGAIN"), "failed round should offer Try Again")
 	game._on_next_pressed()
 	check(game.round_num == 2 and not game.round_over, "Retry should replay round 2")
 	print("  round 1 cleared in %.1fs of game time, banked %d; round 2 failed and retried" % [t, banked])

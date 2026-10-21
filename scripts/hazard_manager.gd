@@ -17,10 +17,11 @@ func setup(round_num: int, rng: RandomNumberGenerator) -> void:
 	_rng = rng
 	# Keep a finite number of alerts per round. Later rounds make the same
 	# pressure arrive sooner, rather than making hazards track the player.
-	events_remaining = 6
-	min_delay = maxf(0.65, 2.2 - 0.12 * (round_num - 1))
-	max_delay = min_delay + maxf(0.7, 1.5 - 0.08 * (round_num - 1))
-	_cooldown = _rng.randf_range(min_delay * 0.5, min_delay)
+	# Round 1 is a gentle tutorial: 3 slow fires, the first after a long grace period.
+	events_remaining = mini(6, 2 + round_num)
+	min_delay = maxf(2.0, 9.0 - 1.0 * (round_num - 1))
+	max_delay = min_delay + maxf(1.5, 5.0 - 0.5 * (round_num - 1))
+	_cooldown = _rng.randf_range(min_delay * 1.2, min_delay * 1.6)
 
 
 ## Kept as a compatibility hook for callers from the old dispatch-driven model.
