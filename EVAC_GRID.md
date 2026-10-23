@@ -14,10 +14,17 @@ No plugins or external assets are used.
 1. **Tap a yellow circle** (a survivor group; the badge is its head count).
 2. **Tap or drag along adjacent road tiles** to the green **SAFE** zone. Valid next tiles are outlined. Tap an earlier route tile to cut the route back to it.
 3. Press **DISPATCH** (Enter). The group walks your route tile by tile.
-4. **FIRE!** Hazards arrive on a real-time timer, even before a group moves. A fire can block an active route; the group stops, the blocked segment flashes red, and an alert banner appears. Draw a detour from the group's current tile and dispatch again.
-5. When every group is safe or lost, a score breakdown appears. Press **Next Round** to continue.
+4. **The fire spreads.** Each round starts with a few fires. After a short grace period they creep along the roads, faster as the round goes on. A tile about to catch fire **smolders** (pulsing embers) for a moment first. New fires are also **reported** at random places during the round ("FIRE REPORTED"), smolder a little longer, then spread like the rest.
+5. **STOP.** While a group is moving and no group is selected for planning, the UNDO button becomes **STOP GROUP X** (Z/Backspace too). It stops the last group dispatched; click a moving group's row, or tap it on the map, to aim STOP at another one. A group between tiles walks back to the tile it last reached. Then draw a detour from where it stopped and dispatch again. A **FIRE AHEAD** banner warns when a moving group has fire or a smoldering tile on its route.
+6. When every group is safe or lost, the round ends. Pass it to continue with **Next Round**; fail it and the run is over (see *Runs and game over*).
 
-Keys: Enter dispatch, Z/Backspace undo, C clear, Tab next group, Esc deselect, V map style (dispatch map / debug shapes).
+What fire and smoke do:
+
+- **Round 1 (training):** fire is not deadly. A group stops by itself before a burning tile, and the fire never traps a group.
+- **Round 2 onward:** a group on a burning tile is lost with everyone in it, and there is no automatic stop. You have to press STOP.
+- **Smoke** (road next to a fire) costs one survivor per smoke tile walked onto. A group **standing still** in smoke also loses one survivor every 2 s (4 s in round 1); an amber ring around the group counts down to the next loss.
+
+Keys: Enter dispatch, Z/Backspace undo (STOP while a group moves), C clear, Tab next group, Esc deselect, V map style (dispatch map / debug shapes).
 
 ## Scoring
 
@@ -26,31 +33,53 @@ Keys: Enter dispatch, Z/Backspace undo, C clear, Tab next group, Esc deselect, V
 | Survivor rescued | +50 each |
 | Route efficiency | up to +100 per group: 100 × shortest ÷ drawn length, measured at each dispatch |
 | Planning speed | +80 − 4/s per first dispatch. The **PLAN CLOCK** runs from round start or the last dispatch |
-| Hazard response | +80 − 6/s per detour, timed from when the fire appeared |
-| Casualty | −60 per survivor (each smoke tile walked through costs one) |
+| Hazard response | +80 − 6/s per detour, timed from when the fire appeared or the group was stopped |
+| Casualty | −60 per survivor lost to smoke or fire |
 | Round clear | +50 × round, if at least half the survivors got out |
 
-If fewer than half the survivors are saved, the round fails, its points are not banked, and you can retry it.
+If fewer than half the survivors are saved, the round fails and its points are not banked.
+
+## Runs and game over
+
+Each play-through is a **run**, like classic Tetris: it starts at round 1 and lasts until a round is failed.
+
+- A failed round shows **GAME OVER** with the final score (points banked from completed rounds), the round reached, the people saved during the run (the failed round included) and the best score. **NEW BEST!** appears when the run beat it.
+- **TRY AGAIN** starts a new run: round 1, score 0, new random maps.
+- The best score and the round it reached are saved on the device (`user://best_score.cfg`). A missing or broken file counts as no best yet and never stops the game.
 
 ## Progression
 
-- **Round 1:** a hand-authored training map with 2 groups and a timed hazard schedule.
-- **Round 2 onward:** seeded Physarum layouts organized into uneven city blocks with side streets, cross-links and wider avenues. Maps get gradually wider, with more groups (up to 6), more road closures, pre-existing fires, and a progressively faster timed hazard schedule (3 slow fires in round 1, rising to 6 per round; round 1 gets a ~11-14s grace period).
+- **Round 1:** a hand-authored training map with 2 groups, slow non-lethal fire and a 12 s grace period.
+- **Round 2 onward:** seeded Physarum layouts organized into uneven city blocks with side streets, cross-links and wider avenues. Maps get gradually wider, with more groups (up to 6), more road closures and more pre-placed fires. The fire spreads sooner and faster, and more fires are reported during the round.
+
+Fire tuning per round (all in `HazardManager.setup()`; round 5 onward uses the round 5 row):
+
+| Round | Starting fires | Grace (s) | Spread interval (s) | Smolder (s) | Smoke drain (s) | Spot fires | First spot (s) | Spot gap (s) | Spot warning (s) | Lethal |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | 1 | 12 | 6.0 → 4.0 | 2.0 | 4.0 | 2 | 20 | 15–20 | 3.0 | No |
+| 2 | 1 | 10 | 5.0 → 3.0 | 1.8 | 2.0 | 3 | 15 | 12–15 | 3.0 | Yes |
+| 3 | 2 | 8 | 4.5 → 2.5 | 1.6 | 2.0 | 3 | 12 | 10–13 | 2.5 | Yes |
+| 4 | 2 | 7 | 4.0 → 2.0 | 1.5 | 2.0 | 4 | 10 | 8–11 | 2.5 | Yes |
+| 5+ | 3 | 6 | 3.5 → 1.5 | 1.5 | 2.0 | 5 | 8 | 6–9 | 2.5 | Yes |
+
+- **Starting fires** count the map's pre-placed fires, and are topped up to the number above, far from every group and the safe zone.
+- **Spread:** after the grace period, each connected patch of fire grows by one tile per tick. The interval between ticks shrinks linearly over 60 s.
+- **Spot fires** land on a random road tile at least 4 tiles from every group and the safe zone.
 
 ## Code layout
 
 | File | Responsibility |
 |---|---|
 | `scenes/main.tscn` | Single scene: a root `Control` running `game.gd` (its inspector holds the map style settings) |
-| `scripts/game.gd` | Round flow, operator actions, UI construction and refresh, choice of map style |
-| `scripts/city_map.gd` | Grid data, fires and smoke, BFS pathfinding, robustness check; holds the city plan and safe-zone designation |
+| `scripts/game.gd` | Round and run flow (game over, best score), operator actions including STOP, UI construction and refresh, choice of map style |
+| `scripts/city_map.gd` | Grid data, fires, smoldering tiles and smoke, BFS pathfinding, robustness check; holds the city plan and safe-zone designation |
 | `scripts/map_generator.gd` | Hand-authored round 1 and seeded Physarum/city-block rounds with safety validation |
 | `scripts/physarum_sim.gd` | Seeded slime-mould agent simulation: randomized colony center, trail map, diffusion/decay, food attractors |
 | `scripts/city_layout.gd` | City plan for a finished map: building and park lots, the safe-zone building, road classes. Never changes a tile |
 | `scripts/city_building.gd` | One lot: footprint, variant, rotation, entrances, safe-zone designation |
 | `scripts/route_validator.gd` | Route legality: start tile, contiguity, no fire or buildings, ends in SAFE |
-| `scripts/survivor_group.gd` | Group state machine and tile-by-tile movement |
-| `scripts/hazard_manager.gd` | Places timed fires, only where every active group keeps a detour |
+| `scripts/survivor_group.gd` | Group state machine, tile-by-tile movement, STOP, smoke and fire effects |
+| `scripts/hazard_manager.gd` | Fire per round: starting fires, spread with smolder warnings and the fairness rule, spot fires; all tuning in `setup()` |
 | `scripts/score_keeper.gd` | Score buckets and the result breakdown |
 | `scripts/map_view.gd` | What is drawn where: static city layer, per-frame overlay layer, mouse and touch input |
 | `scripts/map_painter.gd` | How each map object looks: primitive painters for both styles, lot geometry, legend icons |
@@ -76,7 +105,7 @@ Up to 12 Physarum attempts are made, each with a new center; then up to 40 stree
 
 **Tests.** Run both from the project folder; each exits 0 when every check passes.
 
-- `godot --headless --path . --script res://tests/test_generation.gd` (add `-- --seeds=N` for more maps per round) checks hundreds of generated maps: solvability, detours, reproducibility, center bounds, fallbacks, city-plan validity, live-hazard play-throughs, map-view alignment, the real game scene, and a full round (play, bank, next, fail, retry).
+- `godot --headless --path . --script res://tests/test_generation.gd` (add `-- --seeds=N` for more maps per round) checks hundreds of generated maps: solvability, detours, reproducibility, center bounds, fallbacks, city-plan validity, map-view alignment and the real game scene. It also tests the fire rules (only road burns, spread only to neighbours, smolder timing, the fairness rule, spot-fire schedule and placement, spread per patch), the group effects (fire, smoke drain, STOP), automated play-throughs that compare three fire setups, a full run (play, bank, next round, game over, new run) and the best-score file. The game tests use a scratch best-score file, so they never touch a real best score.
 - `godot --headless --path . --script res://tests/test_city_layout.gd` checks the city plan, footprint geometry against roads, safe-zone designation, that no gameplay script references visual code, drawing in every theme, and route planning with pointer events in both styles.
 - `godot --path . --script res://tests/capture_screenshots.gd -- --out=C:/shots` (needs a window, not `--headless`) saves snapshots of rounds 1/3/6/9 in both styles, plus one using stand-in art in the asset slots. Headless tests cannot show what the map looks like; this does.
 
@@ -113,7 +142,8 @@ Switch styles with **V** in game, or set **Visual Style** on the `Main` node in 
 | Park | `CityBuilding` kind PARK | `draw_lot` | `park_texture` |
 | Safe zone | a building designated `SAFE_ZONE` (its tiles are SAFE) | `draw_lot` + `draw_safe_zone` highlight | the building's own |
 | Fire / smoke | `CityMap.fires`, `is_smoke()` | `draw_fire`, `draw_smoke` | `fire_texture` |
-| Survivor group | `SurvivorGroup` | `draw_survivor` | `survivor_texture` |
+| Smoldering tile | `CityMap.smolders` | `draw_smolder` (pulsing embers, faster near ignition) | (none yet) |
+| Survivor group | `SurvivorGroup` (amber countdown ring while draining in smoke) | `draw_survivor` | `survivor_texture` |
 | Route, hover, alerts | game state pushed into `MapView` | `MapView._draw_overlay` | (none yet) |
 
 `MapView` draws the city (ground, roads, lots) on a layer that is redrawn only when the map, its layout, the theme or the view size changes. Hazards, routes, survivors and popups are redrawn every frame on a layer above it. Neither layer takes input. All drawing and all input use the same tile <-> screen transform.
@@ -139,8 +169,11 @@ A building texture is stretched over the footprint's bounds, clipped to its outl
 ## Guarantees and assumptions
 
 - Every generated map is checked so each group has a path to safety, and still has one if any single tile on its shortest route is blocked. Every open road also stays connected to the safe zone. Any change that breaks this is reverted. If Physarum generation fails, the street lattice is used, and if that fails too, the hand-authored map.
-- An in-run fire is only placed where every active group still has a route to safety, so no group can be stranded.
-- When a fire cuts a route, the group stops at the next tile boundary rather than walking up to the fire.
-- Smoke (road tiles next to a fire) can be walked through but costs one survivor per tile. This makes the trade-off between a short route and a safe route explicit.
+- Starting fires leave every group a path to safety (and a detour too, when one can be found). From round 2 the spreading fire may later cut a group off: you are never trapped if you act in time, but a group left too long can be.
+- Only plain road burns. The safe zone and rubble closures never smolder or catch fire.
+- **Fairness:** no new fire (spread or spot) starts on a moving group's route from its current tile to 3 tiles ahead. A tile that was already smoldering still ignites.
+- **Round 1:** fire never ignites under a group or cuts a group's last path to safety; such a tile keeps smoldering until it is clear. A group stops at the next tile boundary rather than walking into fire.
+- **STOP** takes effect at once and never carries a group onto a tile it had not reached yet.
+- Smoke (road tiles next to a fire) can be walked through but costs one survivor per tile, and drains groups that stand in it. This makes the trade-off between a short route and a safe route explicit.
 - Routes may pass through tiles where other groups are waiting. Tapping a group's tile only switches selection when it isn't a valid next step for the current route.
 - Touch input uses Godot's default "emulate mouse from touch".

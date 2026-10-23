@@ -458,6 +458,19 @@ static func draw_smoke(ci: CanvasItem, th: VisualTheme, r: Rect2, time: float = 
 	_hatch(ci, r, th.smoke_line, maxf(1.0, r.size.x * 0.06))
 
 
+## A tile about to catch fire: a pulsing ember glow with a few hot specks.
+## `urgency` 0..1 rises as the tile nears ignition and speeds up the pulse.
+static func draw_smolder(ci: CanvasItem, th: VisualTheme, r: Rect2, time: float, urgency: float) -> void:
+	var c := r.get_center()
+	var pulse := 0.5 + 0.5 * sin(time * (5.0 + 9.0 * urgency) + r.position.x * 0.1)
+	ci.draw_rect(r, Color(th.ember, th.ember.a * (0.35 + 0.45 * pulse)))
+	ci.draw_circle(c, r.size.x * (0.22 + 0.12 * pulse), Color(th.ember_core, 0.35 + 0.4 * urgency))
+	for k in 3:
+		var a := TAU * k / 3.0 + time * 1.7
+		ci.draw_circle(c + Vector2(cos(a), sin(a)) * r.size.x * 0.28, maxf(1.0, r.size.x * 0.05), th.ember_core)
+	ci.draw_rect(r.grow(-1.0), Color(th.ember_core, 0.4 + 0.5 * pulse), false, maxf(1.0, r.size.x * 0.05))
+
+
 static func draw_fire(ci: CanvasItem, th: VisualTheme, r: Rect2, time: float) -> void:
 	var body := r.grow(-1.0)
 	if th.fire_sheet_texture != null:
@@ -581,6 +594,9 @@ static func draw_legend_symbol(ci: CanvasItem, th: VisualTheme, kind: String, r:
 		"smoke":
 			_legend_road(ci, th, r)
 			draw_smoke(ci, th, r)
+		"smolder":
+			_legend_road(ci, th, r)
+			draw_smolder(ci, th, r, 0.0, 0.5)
 
 
 static func _legend_road(ci: CanvasItem, th: VisualTheme, r: Rect2) -> void:

@@ -78,9 +78,15 @@ enum Style { DEBUG_SHAPES, DISPATCH_STYLE }
 @export_group("Hazards")
 @export var fire := UiPalette.ALERT
 @export var fire_core := UiPalette.MINT
-@export var smoke := Color(UiPalette.TEAL_MID, 0.4)
-@export var smoke_line := Color(UiPalette.MINT, 0.85)
+@export var fire_glow := Color(UiPalette.ALERT, 0.32)
+@export var smoke := Color(UiPalette.WARNING, 0.4)
+@export var smoke_line := Color(UiPalette.WARNING, 0.85)
+## Smoldering tiles (about to ignite): pulsing ember overlay.
+@export var ember := Color(UiPalette.DANGER, 0.55)
+@export var ember_core := UiPalette.WARNING
 @export var alert := UiPalette.ALERT
+## Ring around a group losing people to smoke while it stands still.
+@export var smoke_drain_ring := UiPalette.WARNING
 
 @export_group("Survivors")
 @export var survivor := UiPalette.GREEN

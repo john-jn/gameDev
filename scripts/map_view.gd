@@ -49,6 +49,9 @@ var route_eta_seconds := 0.0
 var alert_countdown := 0.0
 var alert_progress := 0.0
 var alert_icon_texture: Texture2D
+## Full smolder warning time, so embers pulse faster as ignition nears.
+var smolder_time := 2.0
+
 var _time := 0.0
 var _safe_breath := 0.0
 var _waiting_scale := 0.9
@@ -511,6 +514,10 @@ func _draw_overlay(ci: CanvasItem) -> void:
 					ci.draw_rect(tile_rect(p).grow(-1.0), Color(team_color, 0.10))
 
 	# 3. Animated fire sprites and faint danger-radius rings; smoke is lower.
+	# Smoke is drawn on its own layer below this overlay.
+	for s in map.smolders:
+		var urgency := 1.0 - clampf(map.smolders[s] / maxf(smolder_time, 0.01), 0.0, 1.0)
+		MapPainter.draw_smolder(ci, th, tile_rect(s), _time, urgency)
 	for f in map.fires:
 		var fire_center := tile_center(f)
 		var fire_pulse := 0.5 + 0.5 * sin(_time * 2.8 + float(f.x + f.y))
@@ -581,6 +588,12 @@ func _draw_overlay(ci: CanvasItem) -> void:
 		var fill: Color = th.survivor_blocked if g.state == SurvivorGroup.State.BLOCKED else th.survivor
 		MapPainter.draw_survivor(ci, th, font, c, rad, g.label, g.survivors, fill,
 				selected != null and g != selected)
+		if g.is_draining(map):
+			# Countdown ring that fills toward the next smoke loss, flashing amber.
+			var ring := rad + 9.0
+			var k := clampf(g.smoke_timer / g.smoke_drain, 0.0, 1.0)
+			ci.draw_arc(c, ring, 0, TAU, 32, Color(th.smoke_drain_ring, 0.25), 3.0, true)
+			ci.draw_arc(c, ring, -PI * 0.5, -PI * 0.5 + TAU * k, 32, Color(th.smoke_drain_ring, 0.55 + 0.45 * pulse), 4.0, true)
 
 	# 8. Floating popups.
 	for pp in _popups:
