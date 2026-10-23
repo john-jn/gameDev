@@ -61,14 +61,7 @@ A UI reskin of `scripts/game.gd` and map presentation, plus shared palette and U
 
 ## Hazard schedule (`hazard_manager.gd`)
 
-| | Before | After |
-|---|---|---|
-| Fires per round | 6 | `min(6, 2 + round)`, so round 1 has 3 |
-| `min_delay` | `max(0.65, 2.2 - 0.12 * (round - 1))` | `max(2.0, 9.0 - 1.0 * (round - 1))` |
-| `max_delay` | `min_delay + max(0.7, 1.5 - 0.08 * (round - 1))` | `min_delay + max(1.5, 5.0 - 0.5 * (round - 1))` |
-| First fire | `rand(0.5 to 1.0) * min_delay` | `rand(1.2 to 1.6) * min_delay` (about 11 to 14 s in round 1) |
-
-Fire placement logic (`_pick_tile`, `_can_block`) is unchanged, so the guarantee that no group can be stranded still holds.
+Fire now spreads from starting fires along roads after a round-specific grace period. New spread tiles smolder before igniting; spot fires use their own warning timer. The round tuning and safety rules are documented in [`FIRE_SPREAD.md`](./FIRE_SPREAD.md). The map countdown displays time to the next spread or scheduled spot fire.
 
 ## Scoring labels (`score_keeper.gd`)
 
