@@ -1,6 +1,6 @@
 # Evac Grid: Sound Guide
 
-For whoever makes or finds the music and sound effects. **The game has no audio yet.** Everything below is the plan.
+For whoever makes or finds the music and sound effects. **The audio assets have been collected, but the game has no audio playback yet.** Everything below describes the plan and current asset status.
 
 ---
 
@@ -81,6 +81,36 @@ Priority: **P1** = must have, **P2** = should have, **P3** = nice to have.
 | `sfx_star_on` | P2 | Each rating light turns on | 0.4 s | Sparkle with rising pitch, higher for each star |
 | `sfx_next_round` | P2 | Pressing NEXT ROUND or TRY AGAIN | 0.3 s | Confirm click, like dispatch but shorter |
 
+## SFX asset status
+
+All 23 planned SFX are present in `res://assets/audio/`. The extensions are preserved from the source files, and Godot can import all of these formats.
+
+| Status | Sound guide name | Project file |
+|---|---|---|
+| [x] | `sfx_select_team` | `sfx_select_team.ogg` |
+| [x] | `sfx_route_tick` | `sfx_route_tick.ogg` |
+| [x] | `sfx_invalid` | `sfx_invalid.ogg` |
+| [x] | `sfx_dispatch` | `sfx_dispatch.ogg` |
+| [x] | `sfx_undo` | `sfx_undo.ogg` |
+| [x] | `sfx_clear` | `sfx_clear.ogg` |
+| [x] | `sfx_detour_dispatch` | `sfx_detour_dispatch.ogg` |
+| [x] | `sfx_button_hover` | `sfx_button_hover.ogg` |
+| [x] | `sfx_help_toggle` | `sfx_help_toggle.ogg` |
+| [x] | `sfx_tablet_on` | `sfx_tablet_on.ogg` |
+| [x] | `sfx_fire_start` | `sfx_fire_start.ogg` |
+| [x] | `sfx_alert_blocked` | `sfx_alert_blocked.ogg` |
+| [x] | `sfx_fire_loop` | `sfx_fire_loop.wav` |
+| [x] | `sfx_casualty` | `sfx_casualty.ogg` |
+| [x] | `sfx_plan_warning` | `sfx_plan_warning.ogg` |
+| [x] | `sfx_radio_static` | `sfx_radio_static.wav` |
+| [x] | `sfx_footsteps_loop` | `sfx_footsteps_loop.wav` |
+| [x] | `sfx_team_safe` | `sfx_team_safe.ogg` |
+| [x] | `sfx_round_complete` | `sfx_round_complete.ogg` |
+| [x] | `sfx_round_failed` | `sfx_round_failed.ogg` |
+| [x] | `sfx_score_tick` | `sfx_score_tick.ogg` |
+| [x] | `sfx_star_on` | `sfx_star_on.ogg` |
+| [x] | `sfx_next_round` | `sfx_next_round.ogg` |
+
 ## Voice lines (optional, P3)
 Short, calm, radio-filtered voice. Text-to-speech is fine if it is run through a radio filter.
 - "Fire reported."
@@ -100,6 +130,17 @@ Format: `.ogg`, 44.1 kHz stereo, seamless loop. Name: `music_calm.ogg`, `music_t
 | `music_tense` | P2 | When fires are active, later rounds | 110 to 130 BPM | 1.5 to 2 min loop | Same sounds as calm but faster, with a ticking clock element and a deeper bass |
 | `music_result_win` | P3 | Results card | n/a | 6 to 8 s | Short warm resolve of the calm theme |
 | `music_result_fail` | P3 | Results card | n/a | 6 to 8 s | Short, low and unresolved |
+
+## Music asset status
+
+All four planned music assets are present in `res://assets/audio/`. The calm, tense, and win tracks retain their source formats; convert them to `.ogg` if strict guide-format compliance is required.
+
+| Status | Sound guide name | Project file |
+|---|---|---|
+| [x] | `music_calm` | `music_calm.mp3` |
+| [x] | `music_tense` | `music_tense.wav` |
+| [x] | `music_result_win` | `music_result_win.wav` |
+| [x] | `music_result_fail` | `music_result_fail.ogg` |
 
 Switching: fade from calm to tense over about 2 seconds when the first fire starts. Go back to calm when no group is blocked.
 
@@ -148,9 +189,11 @@ Keep a `CREDITS.md` listing every file, its author, its source link and its lice
 
 # Checklist
 
-- [ ] All P1 sound effects (9)
-- [ ] All P2 sound effects
-- [ ] `music_calm` and `music_tense`
+- [x] All P1 sound effects (9)
+- [x] All P2 sound effects
+- [x] All P3 sound effects
+- [x] `music_calm`, `music_tense`, `music_result_win`, and `music_result_fail`
 - [ ] Levels normalised as in Part 4
 - [ ] `CREDITS.md`
 - [ ] Hook-up in `game.gd`, with volume settings
+- [ ] Optional voice lines
