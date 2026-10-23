@@ -5,6 +5,8 @@ extends SceneTree
 ## Optional user args (after `--`): --seeds=N (default 20 per round).
 ## Exits with code 0 when every check passes, 1 otherwise.
 
+const TEST_BEST_PATH := "user://test_best_score.cfg"  ## scratch best-score file for the game tests
+
 var failures := 0
 var checks := 0
 var seeds_per_round := 20
@@ -26,10 +28,24 @@ func _run() -> void:
 	test_center_selection()
 	test_boundary_centers()
 	test_lattice_fallback()
+	test_fire_only_burns_road()
+	test_spread_reaches_neighbours_only()
+	test_smolder_becomes_fire()
+	test_fairness_distance()
+	test_fire_kills_waiting_group()
+	test_smoke_drain_timing()
+	test_stop_backs_off()
+	test_spot_fire_schedule()
+	test_spot_fire_fairness()
+	test_spot_fire_round1_never_traps()
+	test_spot_fire_retry()
+	test_spread_per_front()
+	test_whole_map_spread_unchanged()
 	test_gameplay_simulation()
 	test_map_view_alignment()
 	await test_game_integration()
 	await test_round_flow()
+	await test_best_score_file()
 	print("\n==== %d checks, %d failures, %.1fs ====" % [checks, failures, (Time.get_ticks_msec() - t0) / 1000.0])
 	quit(1 if failures > 0 else 0)
 
@@ -48,7 +64,7 @@ func validate_map(m: CityMap, round_num: int, tag: String) -> bool:
 	ok = check(m.survivor_starts.size() == MapGenerator.group_count_for(round_num) or m.gen_info.get("source") == "handmade",
 			"%s: group count %d" % [tag, m.survivor_starts.size()]) and ok
 	ok = check(m.survivor_sizes.size() == m.survivor_starts.size(), "%s: sizes/starts mismatch" % tag) and ok
-	ok = check(m.fires.size() <= MapGenerator.pre_fire_count_for(round_num), "%s: too many pre-fires" % tag) and ok
+	ok = check(m.fires.size() <= start_fire_cap(round_num), "%s: too many fires at round start" % tag) and ok
 	ok = check(MapGenerator._layout_ok(m), "%s: layout rules violated" % tag) and ok
 	for i in m.survivor_starts.size():
 		var s := m.survivor_starts[i]
@@ -68,6 +84,14 @@ func validate_map(m: CityMap, round_num: int, tag: String) -> bool:
 	ok = check(problems.is_empty(), "%s: city layout: %s" % [tag, problems.slice(0, 3)]) and ok
 	ok = check(not m.safe_zones().is_empty(), "%s: no safe-zone building" % tag) and ok
 	return ok
+
+
+## Most fires a map may hold at round start: the generator's pre-placed fires,
+## topped up by HazardManager to its starting-fire count.
+func start_fire_cap(round_num: int) -> int:
+	var hz := HazardManager.new()
+	hz.setup(round_num, RandomNumberGenerator.new())
+	return maxi(MapGenerator.pre_fire_count_for(round_num), hz.start_fires)
 
 
 func center_bounds(m: CityMap) -> Rect2:
@@ -331,42 +355,617 @@ func test_lattice_fallback() -> void:
 	print("  fallback chain: physarum -> %s -> %s" % [lat.gen_info["source"], last.gen_info["source"]])
 
 
-## Plays rounds automatically: dispatches every group along its shortest path,
-## lets HazardManager drop fires, and re-routes halted groups. No group may
-## ever be left without a path to safety.
+## Small hand-built map for the fire unit tests. A main street along y = 2
+## ends in a SAFE tile at its east end; a cross street runs down x = 3; a
+## rubble closure sits just north of the main street at x = 6. Every other
+## tile is a building.
+func fire_test_map() -> CityMap:
+	var m := CityMap.new()
+	m.setup(12, 5, CityMap.Tile.BUILDING)
+	for x in 11:
+		m.set_tile(Vector2i(x, 2), CityMap.Tile.ROAD)
+	for y in 5:
+		m.set_tile(Vector2i(3, y), CityMap.Tile.ROAD)
+	m.set_tile(Vector2i(11, 2), CityMap.Tile.SAFE)
+	m.road_closures[Vector2i(6, 1)] = true
+	return m
+
+
+## A HazardManager with lethal fire, no starting or spot fires, no grace
+## period and a fast, fixed spread so the unit tests run quickly.
+func fast_hazards(seed: int) -> HazardManager:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = seed
+	var hz := HazardManager.new()
+	hz.setup(2, rng)
+	hz.start_fires = 0
+	hz.spot_fires = 0
+	hz.grace = 0.0
+	hz.interval_start = 0.2
+	hz.interval_min = 0.2
+	hz.smolder_time = 0.5
+	return hz
+
+
+func test_fire_only_burns_road() -> void:
+	print("\n[fire spread] fire never enters the safe zone or rubble")
+	var m := fire_test_map()
+	var safe := Vector2i(11, 2)
+	var rubble := Vector2i(6, 1)
+	m.add_fire(safe)
+	m.add_fire(rubble)
+	m.add_smolder(safe, 1.0)
+	m.add_smolder(rubble, 1.0)
+	check(not m.is_fire(safe) and not m.is_fire(rubble), "add_fire must refuse the safe zone and rubble")
+	check(not m.is_smoldering(safe) and not m.is_smoldering(rubble), "add_smolder must refuse the safe zone and rubble")
+	m.add_fire(Vector2i(0, 2))
+	var hz := fast_hazards(11)
+	var none: Array[SurvivorGroup] = []
+	for i in 1200:
+		hz.update(0.05, m, none)
+		for p in m.fires:
+			if not check(m.get_tile(p) == CityMap.Tile.ROAD, "fire on a non-road tile %s" % p):
+				return
+		for p in m.smolders:
+			if not check(m.get_tile(p) == CityMap.Tile.ROAD, "smolder on a non-road tile %s" % p):
+				return
+	var roads := 0
+	for y in m.height:
+		for x in m.width:
+			if m.get_tile(Vector2i(x, y)) == CityMap.Tile.ROAD:
+				roads += 1
+	print("  road tiles: %d, burning after 60s: %d" % [roads, m.fires.size()])
+	check(m.fires.size() == roads, "left alone, the fire should take every road tile (%d/%d)" % [m.fires.size(), roads])
+	check(not m.is_fire(safe) and not m.is_fire(rubble), "the safe zone and rubble must never burn")
+
+
+func test_spread_reaches_neighbours_only() -> void:
+	print("\n[fire spread] new smolders are always next to the fire")
+	var m := fire_test_map()
+	m.add_fire(Vector2i(0, 2))
+	var hz := fast_hazards(12)
+	hz.tiles_per_tick = 2
+	var none: Array[SurvivorGroup] = []
+	var started := 0
+	for i in 600:
+		var before := m.smolders.duplicate()
+		hz.update(0.05, m, none)
+		for p in m.smolders:
+			if before.has(p):
+				continue
+			started += 1
+			var next_to_fire := false
+			for d in CityMap.DIRS:
+				if m.is_fire(p + d):
+					next_to_fire = true
+			check(next_to_fire, "smolder at %s is not next to a burning tile" % p)
+	print("  smolders started: %d" % started)
+	check(started > 5, "the fire should have spread")
+
+
+func test_smolder_becomes_fire() -> void:
+	print("\n[fire spread] a smoldering tile ignites after its warning time")
+	var m := fire_test_map()
+	var p := Vector2i(5, 2)
+	var hz := fast_hazards(13)
+	hz.grace = 999.0  # no spreading: only the timer is under test
+	var none: Array[SurvivorGroup] = []
+	m.add_smolder(p, 1.0)
+	var t := 0.0
+	var lit_at := -1.0
+	while t < 3.0 and lit_at < 0.0:
+		var lit := hz.update(0.05, m, none)
+		t += 0.05
+		if not lit.is_empty():
+			check(lit.size() == 1 and lit[0] == p, "only the smoldering tile should ignite, got %s" % [lit])
+			lit_at = t
+		elif m.is_fire(p):
+			check(false, "tile ignited without being reported")
+	print("  smoldered for 1.0s, ignited at %.2fs" % lit_at)
+	check(absf(lit_at - 1.0) < 0.06, "ignition should come after 1.0s, got %.2fs" % lit_at)
+	check(m.is_fire(p) and not m.is_smoldering(p), "the tile should now burn, not smolder")
+
+
+## A group walks the main street toward the fire's side of the map while the
+## fire spreads fast; no new smolder may start on its route from its current
+## tile up to fair_distance tiles ahead.
+func test_fairness_distance() -> void:
+	print("\n[fire spread] fairness distance ahead of a moving group")
+	var exercised := 0
+	var violations := 0
+	for seed in 20:
+		var m := fire_test_map()
+		m.add_fire(Vector2i(3, 0))
+		var hz := fast_hazards(100 + seed)
+		hz.tiles_per_tick = 3
+		var g := SurvivorGroup.new(0, "A", Vector2i(0, 2), 5)
+		g.fire_lethal = true
+		var groups: Array[SurvivorGroup] = [g]
+		g.dispatch(m.find_path(g.tile))
+		for i in 200:
+			if g.state != SurvivorGroup.State.MOVING:
+				break
+			var window := {}
+			for k in range(g.index, mini(g.index + hz.fair_distance, g.path.size() - 1) + 1):
+				window[g.path[k]] = true
+			for w in window:
+				if not m.is_fire(w) and not m.is_smoldering(w):
+					for d in CityMap.DIRS:
+						if m.is_fire(w + d):
+							exercised += 1  # the rule is what keeps this tile clear
+							break
+			var before := m.smolders.duplicate()
+			hz.update(0.05, m, groups)
+			for p in m.smolders:
+				if not before.has(p) and window.has(p):
+					violations += 1
+			g.step(0.05, m)
+	print("  frames where the rule held back the fire: %d, violations: %d" % [exercised, violations])
+	check(violations == 0, "new smolders started inside a moving group's fairness window")
+	check(exercised > 0, "the test should actually put fire next to a protected route tile")
+
+
+func test_fire_kills_waiting_group() -> void:
+	print("\n[group effects] a burning tile kills waiting and blocked groups")
+	for s in [SurvivorGroup.State.WAITING, SurvivorGroup.State.BLOCKED]:
+		var m := fire_test_map()
+		var g := SurvivorGroup.new(0, "A", Vector2i(5, 2), 4)
+		g.fire_lethal = true
+		g.state = s
+		check(g.step(0.05, m).is_empty() and g.is_active(), "no fire, no effect")
+		m.add_fire(g.tile)
+		var events := g.step(0.05, m)
+		check(g.state == SurvivorGroup.State.LOST and g.survivors == 0 and g.casualties == 4, "state %d: group should be lost to the fire" % s)
+		check(events.size() == 1 and events[0]["type"] == "lost" and events[0]["cause"] == "fire" and events[0]["count"] == 4,
+				"state %d: expected one 'lost' fire event, got %s" % [s, events])
+	# Training round: fire is not lethal.
+	var m2 := fire_test_map()
+	var safe_g := SurvivorGroup.new(1, "B", Vector2i(5, 2), 4)
+	m2.add_fire(safe_g.tile)
+	safe_g.step(0.05, m2)
+	check(safe_g.is_active() and safe_g.survivors == 4, "non-lethal fire must not kill")
+	# A moving group that walks into fire dies; with lethal fire there is no auto-halt.
+	var m3 := fire_test_map()
+	var walker := SurvivorGroup.new(2, "C", Vector2i(0, 2), 3)
+	walker.fire_lethal = true
+	walker.dispatch(m3.find_path(walker.tile))
+	m3.add_fire(Vector2i(2, 2))
+	for i in 40:
+		walker.step(0.05, m3)
+	check(walker.state == SurvivorGroup.State.LOST, "a group walking into fire should be lost (state %d at %s)" % [walker.state, walker.tile])
+
+
+func test_smoke_drain_timing() -> void:
+	print("\n[group effects] smoke drain for groups standing still")
+	var m := fire_test_map()
+	m.add_fire(Vector2i(6, 2))
+	var g := SurvivorGroup.new(0, "A", Vector2i(5, 2), 5)  # next to the fire: smoke
+	g.smoke_drain = 2.0
+	check(m.is_smoke(g.tile), "test setup: group should stand in smoke")
+	var losses := 0
+	for i in 39:  # 1.95 s
+		for ev in g.step(0.05, m):
+			if ev["type"] == "casualty":
+				losses += 1
+	check(losses == 0 and g.survivors == 5, "no loss before the first full interval (lost %d)" % losses)
+	for i in 2:  # past 2.0 s
+		for ev in g.step(0.05, m):
+			if ev["type"] == "casualty":
+				losses += 1
+	check(losses == 1 and g.survivors == 4, "one loss after the first interval (lost %d)" % losses)
+	# Moving resets the timer: stand 1.5 s, dispatch and stop at once (it halts
+	# on the same tile without moving), then wait another 1.9 s.
+	for i in 30:
+		g.step(0.05, m)
+	var back: Array[Vector2i] = [Vector2i(5, 2), Vector2i(4, 2), Vector2i(3, 2)]
+	g.dispatch(back)
+	check(g.smoke_timer == 0.0, "dispatch should reset the smoke timer")
+	g.stop(0.0)
+	g.step(0.05, m)
+	check(g.state == SurvivorGroup.State.BLOCKED and g.tile == Vector2i(5, 2), "STOP at a tile boundary halts in place")
+	for i in 38:  # 1.9 s
+		g.step(0.05, m)
+	check(g.survivors == 4, "timer should restart after moving (survivors %d)" % g.survivors)
+	for i in 3:
+		g.step(0.05, m)
+	check(g.survivors == 3, "loss after a full interval from the reset (survivors %d)" % g.survivors)
+	# The timer also resets when the smoke clears.
+	for i in 20:
+		g.step(0.05, m)
+	m.remove_fire(Vector2i(6, 2))
+	g.step(0.05, m)
+	check(g.smoke_timer == 0.0 and not g.is_draining(m), "timer resets when the tile clears")
+	# Draining smoke can empty a group.
+	var m2 := fire_test_map()
+	m2.add_fire(Vector2i(6, 2))
+	var small := SurvivorGroup.new(1, "B", Vector2i(5, 2), 1)
+	small.smoke_drain = 2.0
+	var lost := false
+	for i in 50:
+		for ev in small.step(0.05, m2):
+			if ev["type"] == "lost":
+				lost = ev["cause"] == "smoke"
+	check(lost and small.state == SurvivorGroup.State.LOST, "a group drained to zero is lost in the smoke")
+
+
+func test_stop_backs_off() -> void:
+	print("\n[group effects] STOP between tiles walks back to the last tile reached")
+	var m := fire_test_map()
+	var g := SurvivorGroup.new(0, "A", Vector2i(0, 2), 5)
+	g.fire_lethal = true
+	g.dispatch(m.find_path(g.tile))
+	while not (g.tile == Vector2i(3, 2) and g.t > 0.3):
+		g.step(0.05, m)
+	# Smoke appears on the reached tile and fire on the next one.
+	m.add_fire(Vector2i(3, 1))
+	m.add_fire(Vector2i(4, 2))
+	g.stop(5.0)
+	var halted := {}
+	for i in 20:
+		for ev in g.step(0.05, m):
+			if ev["type"] == "halted":
+				halted = ev
+	check(g.state == SurvivorGroup.State.BLOCKED and g.tile == Vector2i(3, 2), "group should halt on (3, 2), got state %d at %s" % [g.state, g.tile])
+	check(g.survivors == 5, "backing off onto a tile already reached must not cost a survivor")
+	check(halted.get("manual", false), "the halt should be reported as a manual STOP")
+	check(g.blocked_since == 5.0, "blocked_since should be the STOP time")
+	# STOP on a tile boundary halts right there.
+	var m2 := fire_test_map()
+	var h := SurvivorGroup.new(1, "B", Vector2i(0, 2), 5)
+	h.dispatch(m2.find_path(h.tile))
+	h.stop(0.0)
+	h.step(0.05, m2)
+	check(h.state == SurvivorGroup.State.BLOCKED and h.tile == Vector2i(0, 2), "STOP before moving halts in place")
+
+
+## A one-street map: road along y = 1 from x = 0 to `length - 2`, a SAFE tile
+## at its east end, and optionally a one-tile dead-end spur north of the
+## street at x = `spur_x` (-1 for none).
+func corridor_map(length: int, spur_x: int) -> CityMap:
+	var m := CityMap.new()
+	m.setup(length, 3, CityMap.Tile.BUILDING)
+	for x in length - 1:
+		m.set_tile(Vector2i(x, 1), CityMap.Tile.ROAD)
+	m.set_tile(Vector2i(length - 1, 1), CityMap.Tile.SAFE)
+	if spur_x >= 0:
+		m.set_tile(Vector2i(spur_x, 0), CityMap.Tile.ROAD)
+	return m
+
+
+## A spot fire tile is plain road (not safe, not rubble) and more than 3 tiles
+## from every active group (where it stands and where it steps next) and from
+## the safe zone.
+func _spot_tile_ok(m: CityMap, groups: Array[SurvivorGroup], p: Vector2i) -> bool:
+	if m.get_tile(p) != CityMap.Tile.ROAD or m.is_road_closure(p):
+		return false
+	var anchors: Array[Vector2i] = []
+	for g in groups:
+		if g.is_active():
+			anchors.append(g.tile)
+			anchors.append(g.next_tile())
+	for y in m.height:
+		for x in m.width:
+			if m.is_safe(Vector2i(x, y)):
+				anchors.append(Vector2i(x, y))
+	for a in anchors:
+		if absi(a.x - p.x) + absi(a.y - p.y) <= 3:
+			return false
+	return true
+
+
+## Spot fires on generated maps, with spreading switched off: exactly
+## `spot_fires` per round, the first at `spot_first`, later gaps within
+## [spot_gap_min, spot_gap_max], each smoldering for `spot_warning` seconds on
+## a legal tile.
+func test_spot_fire_schedule() -> void:
+	print("\n[spot fires] schedule and placement on generated maps, rounds 1-6")
+	const DT := 0.05
+	var placed := 0
+	for r in range(1, 7):
+		for s in 3:
+			var m := MapGenerator.build_from_seed(r, 4400 + 10 * r + s)
+			var rng := RandomNumberGenerator.new()
+			rng.seed = 77 + s
+			var hz := HazardManager.new()
+			hz.setup(r, rng)
+			hz.grace = 1e9  # no spreading: only the spot timer is under test
+			var groups: Array[SurvivorGroup] = []
+			for i in m.survivor_starts.size():
+				groups.append(SurvivorGroup.new(i, char(65 + i), m.survivor_starts[i], m.survivor_sizes[i]))
+			var times: Array[float] = []
+			var t := 0.0
+			while t < 200.0:
+				hz.update(DT, m, groups)
+				t += DT
+				for p in hz.spotted:
+					times.append(t)
+					check(is_equal_approx(m.smolders[p], hz.spot_warning), "round %d: spot fire should smolder for %.1fs, got %.2fs" % [r, hz.spot_warning, m.smolders[p]])
+					check(_spot_tile_ok(m, groups, p), "round %d seed %d: spot fire on an illegal tile %s" % [r, s, p])
+			placed += times.size()
+			check(times.size() == hz.spot_fires, "round %d seed %d: %d spot fires, expected %d" % [r, s, times.size(), hz.spot_fires])
+			if times.is_empty():
+				continue
+			check(times[0] >= hz.spot_first - 0.001 and times[0] < hz.spot_first + DT + 0.001,
+					"round %d seed %d: first spot fire at %.2fs, expected %.1fs" % [r, s, times[0], hz.spot_first])
+			for i in range(1, times.size()):
+				var gap := times[i] - times[i - 1]
+				check(gap >= hz.spot_gap_min - 0.001 and gap < hz.spot_gap_max + DT + 0.001,
+						"round %d seed %d: spot gap %.2fs outside %.0f-%.0fs" % [r, s, gap, hz.spot_gap_min, hz.spot_gap_max])
+	print("  spot fires placed: %d over 18 rounds" % placed)
+
+
+## One group walks a long corridor. With a wide fairness window, spot fires
+## must land outside it even though tiles inside it would otherwise qualify.
+func test_spot_fire_fairness() -> void:
+	print("\n[spot fires] fairness window")
+	var placed := 0
+	var inside := 0
+	for seed in 30:
+		var m := corridor_map(24, -1)
+		var rng := RandomNumberGenerator.new()
+		rng.seed = 500 + seed
+		var hz := HazardManager.new()
+		hz.setup(2, rng)
+		hz.start_fires = 0
+		hz.grace = 1e9
+		hz.fair_distance = 8
+		hz.spot_fires = 1
+		hz.spot_first = 0.0
+		var g := SurvivorGroup.new(0, "A", Vector2i(0, 1), 5)
+		var groups: Array[SurvivorGroup] = [g]
+		g.dispatch(m.find_path(g.tile))
+		for i in seed % 10:
+			g.step(0.05, m)
+		var window := {}
+		for k in range(g.index, mini(g.index + hz.fair_distance, g.path.size() - 1) + 1):
+			window[g.path[k]] = true
+		hz.update(0.05, m, groups)
+		for p in hz.spotted:
+			placed += 1
+			if window.has(p):
+				inside += 1
+			check(_spot_tile_ok(m, groups, p), "spot fire on an illegal tile %s" % p)
+	print("  spot fires placed: %d, inside the window: %d" % [placed, inside])
+	check(placed == 30 and inside == 0, "every spot fire should be placed, none inside the fairness window")
+
+
+## Round 1: a corridor is the group's only way out, with a dead-end spur off
+## it. Every corridor tile far enough away would trap the group, so the
+## training spot fire must take the spur. Lethal rounds may block the corridor.
+func test_spot_fire_round1_never_traps() -> void:
+	print("\n[spot fires] round 1 never traps a group")
+	var spur := Vector2i(10, 0)
+	var on_corridor := 0
+	for seed in 20:
+		for r in [1, 2]:
+			var m := corridor_map(20, spur.x)
+			var rng := RandomNumberGenerator.new()
+			rng.seed = 600 + seed
+			var hz := HazardManager.new()
+			hz.setup(r, rng)
+			hz.start_fires = 0
+			hz.grace = 1e9
+			hz.spot_fires = 1
+			hz.spot_first = 0.0
+			var g := SurvivorGroup.new(0, "A", Vector2i(2, 1), 5)
+			g.fire_lethal = hz.fire_lethal
+			var groups: Array[SurvivorGroup] = [g]
+			hz.update(0.05, m, groups)
+			if not check(hz.spotted.size() == 1, "round %d seed %d: a spot fire should be placed" % [r, seed]):
+				continue
+			var p := hz.spotted[0]
+			if r == 1:
+				check(p == spur, "round 1 seed %d: spot fire at %s would trap the group" % [seed, p])
+				for i in 100:
+					hz.update(0.05, m, groups)
+				check(m.is_fire(spur) and m.has_path(g.tile), "round 1: after the spot fire burns, the group must keep its way out")
+			elif p != spur:
+				on_corridor += 1
+	print("  lethal-round spot fires on the corridor: %d/20" % on_corridor)
+	check(on_corridor > 0, "lethal rounds should be free to block the corridor")
+
+
+## A waiting group and the safe zone leave no tile far enough away, so the
+## spot fire waits and retries every 0.35 s without being used up. Once the
+## group is gone, both spot fires still arrive.
+func test_spot_fire_retry() -> void:
+	print("\n[spot fires] failed placement retries without using up the spot fire")
+	var m := corridor_map(9, -1)
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 700
+	var hz := HazardManager.new()
+	hz.setup(2, rng)
+	hz.start_fires = 0
+	hz.grace = 1e9
+	hz.spot_fires = 2
+	hz.spot_first = 1.0
+	hz.spot_gap_min = 1.0
+	hz.spot_gap_max = 1.0
+	var g := SurvivorGroup.new(0, "A", Vector2i(2, 1), 5)
+	var groups: Array[SurvivorGroup] = [g]
+	var t := 0.0
+	var spots := 0
+	while t < 3.0:
+		hz.update(0.05, m, groups)
+		t += 0.05
+		spots += hz.spotted.size()
+	check(spots == 0 and hz._spots_placed == 0, "no valid tile: nothing placed or used up (%d placed)" % hz._spots_placed)
+	check(hz._spot_at - t <= 0.35 + 0.001 and hz._spot_at > t - 0.06, "next attempt should be within 0.35s (at %.2f, now %.2f)" % [hz._spot_at, t])
+	g.state = SurvivorGroup.State.DELIVERED
+	var cleared_at := t
+	var first_at := -1.0
+	while t < 8.0:
+		hz.update(0.05, m, groups)
+		t += 0.05
+		if not hz.spotted.is_empty() and first_at < 0.0:
+			first_at = t
+		spots += hz.spotted.size()
+	print("  first spot fire %.2fs after the tiles cleared, total %d" % [first_at - cleared_at, spots])
+	check(first_at >= 0.0 and first_at - cleared_at <= 0.35 + 0.05 + 0.001, "the retry should place the spot fire within 0.35s")
+	check(spots == 2, "both spot fires should still arrive after the retries (got %d)" % spots)
+
+
+func test_spread_per_front() -> void:
+	print("\n[spread per front] separate fires each grow every tick")
+	var none: Array[SurvivorGroup] = []
+	for per_front in [true, false]:
+		var m := corridor_map(24, -1)
+		m.add_fire(Vector2i(3, 1))
+		m.add_fire(Vector2i(13, 1))
+		var hz := fast_hazards(21)
+		hz.spread_per_front = per_front
+		for tick in 3:
+			hz._spread(m, none)
+			var left := 0
+			var right := 0
+			for p in m.smolders:
+				if p.x < 8:
+					left += 1
+				else:
+					right += 1
+			if per_front:
+				check(left == 1 and right == 1, "per front, tick %d: each fire should grow by one tile (left %d, right %d)" % [tick, left, right])
+			else:
+				check(left + right == 1, "whole map, tick %d: one tile in total (left %d, right %d)" % [tick, left, right])
+			for p in m.smolders.keys():
+				m.add_fire(p)
+	# Two fires sharing the one free tile between them can't both pick it.
+	for seed in 20:
+		var m := corridor_map(24, -1)
+		m.add_fire(Vector2i(5, 1))
+		m.add_fire(Vector2i(7, 1))
+		var hz := fast_hazards(800 + seed)
+		hz._spread(m, none)
+		check(m.smolders.size() == 2, "seed %d: two fronts should pick two different tiles (%s)" % [seed, m.smolders.keys()])
+
+
+## With spread_per_front off, _spread() must pick exactly what the previous
+## whole-map version did, tick for tick, from the same seeded RNG.
+func test_whole_map_spread_unchanged() -> void:
+	print("\n[spread per front] off = previous whole-map spread")
+	var none: Array[SurvivorGroup] = []
+	var ticks := 0
+	var mismatches := 0
+	for per_tick in [1, 3]:
+		var a := MapGenerator.build_from_seed(7, 8800 + per_tick)
+		var b := MapGenerator.build_from_seed(7, 8800 + per_tick)
+		var start := a.fires.size()
+		var rng_a := RandomNumberGenerator.new()
+		rng_a.seed = 99
+		var rng_b := RandomNumberGenerator.new()
+		rng_b.seed = 99
+		var hz := HazardManager.new()
+		hz.setup(2, rng_a)
+		hz.spread_per_front = false
+		hz.tiles_per_tick = per_tick
+		for tick in 40:
+			hz._spread(a, none)
+			_previous_whole_map_spread(b, rng_b, per_tick)
+			ticks += 1
+			if a.smolders.keys() != b.smolders.keys():
+				mismatches += 1
+			for p in a.smolders.keys():
+				a.add_fire(p)
+			for p in b.smolders.keys():
+				b.add_fire(p)
+		check(a.fires.size() > start + 20, "the fire should have spread (%d -> %d)" % [start, a.fires.size()])
+	print("  ticks compared: %d, mismatches: %d" % [ticks, mismatches])
+	check(mismatches == 0, "whole-map spread differs from the previous version on %d ticks" % mismatches)
+
+
+## The spread tick as it was before spread_per_front (no groups, lethal fire).
+func _previous_whole_map_spread(m: CityMap, rng: RandomNumberGenerator, per_tick: int) -> void:
+	var front: Array[Vector2i] = []
+	var seen := {}
+	for f in m.fires:
+		for d in CityMap.DIRS:
+			var p: Vector2i = f + d
+			if seen.has(p) or not m.can_burn(p) or m.is_fire(p) or m.is_smoldering(p):
+				continue
+			seen[p] = true
+			front.append(p)
+	MapGenerator.shuffle(front, rng)
+	for i in mini(per_tick, front.size()):
+		m.add_smolder(front[i], 1.0)
+
+
+## Plays rounds automatically with spreading fire. Like a human operator, the
+## bot needs THINK seconds per route, so it dispatches one group at a time
+## along its shortest path while the fire spreads. It presses STOP when fire
+## or a smoldering tile lies just ahead and then re-routes. Every frame it
+## checks the fire rules on real maps: only road burns, spread smolders start
+## next to the fire, spot fires keep their distance from groups and the safe
+## zone, nothing new starts inside a moving group's fairness window, and in
+## round 1 (training) no group is ever stranded or killed by fire. From round
+## 2 a group may be stranded; it then waits until the fire or smoke takes it.
+## Runs three fire setups so their difficulty can be compared.
 func test_gameplay_simulation() -> void:
-	print("\n[gameplay simulation] rounds 2-9 x 6 seeds, auto-dispatch with live hazards")
+	print("\n[gameplay simulation] rounds 1-9 x 6 seeds, auto-dispatch with spreading fire")
+	_simulate("previous build: whole-map spread, no spot fires", false, false)
+	_simulate("spread per front, no spot fires", false, true)
+	_simulate("spread per front + spot fires (default)", true, true)
+
+
+func _simulate(label: String, spots: bool, per_front: bool) -> void:
+	const DT := 0.05
+	const LIMIT := 300.0
+	const THINK := 3.0
 	var rounds := 0
-	var fires_total := 0
+	var ignitions := 0
+	var stops := 0
 	var detours := 0
 	var delivered := 0
-	var lost := 0
+	var burned := 0
+	var smoked := 0
 	var stranded := 0
-	var timeouts := 0
-	for r in range(2, 10):
+	var unresolved := 0
+	var spot_count := 0
+	var round_secs := 0.0
+	for r in range(1, 10):
 		for s in 6:
 			var m := MapGenerator.build_from_seed(r, 9000 + 10 * r + s)
 			var rng := RandomNumberGenerator.new()
 			rng.seed = 31337 + s
-			var groups: Array[SurvivorGroup] = []
-			for i in m.survivor_starts.size():
-				groups.append(SurvivorGroup.new(i, char(65 + i), m.survivor_starts[i], m.survivor_sizes[i]))
 			var hz := HazardManager.new()
 			hz.setup(r, rng)
+			hz.spread_per_front = per_front
+			if not spots:
+				hz.spot_fires = 0
+			var safe_tiles: Array[Vector2i] = []
+			for y in m.height:
+				for x in m.width:
+					if m.is_safe(Vector2i(x, y)):
+						safe_tiles.append(Vector2i(x, y))
+			var groups: Array[SurvivorGroup] = []
+			for i in m.survivor_starts.size():
+				var g := SurvivorGroup.new(i, char(65 + i), m.survivor_starts[i], m.survivor_sizes[i])
+				g.fire_lethal = hz.fire_lethal
+				g.smoke_drain = hz.smoke_drain
+				groups.append(g)
+			for p in hz.place_starting_fires(m, groups):
+				for g in groups:
+					check(absi(g.tile.x - p.x) + absi(g.tile.y - p.y) >= 3, "round %d seed %d: starting fire %s too close to group %s" % [r, s, p, g.label])
+			check(m.fires.size() >= hz.start_fires, "round %d seed %d: only %d of %d starting fires" % [r, s, m.fires.size(), hz.start_fires])
+			for g in groups:
+				check(m.has_path(g.tile), "round %d seed %d: starting fires cut group %s off" % [r, s, g.label])
 			var scorer := ScoreKeeper.new()
+			var stuck := {}
 			var time := 0.0
+			var next_route := THINK
 			rounds += 1
-			while time < 240.0:
+			while time < LIMIT:
 				var active := false
 				for g in groups:
-					if g.is_active():
-						active = true
-					if g.can_plan():
+					if not g.is_active():
+						continue
+					active = true
+					if g.can_plan() and time >= next_route:
 						var path := m.find_path(g.tile)
 						if path.is_empty():
-							stranded += 1
-							check(false, "round %d seed %d: group %s stranded at %s" % [r, s, g.label, g.tile])
-							g.state = SurvivorGroup.State.LOST
+							if not stuck.has(g):
+								stuck[g] = true
+								stranded += 1
+								check(hz.fire_lethal, "round %d seed %d: training fire stranded group %s" % [r, s, g.label])
 							continue
 						var v := RouteValidator.validate(m, path, g.tile)
 						check(v["valid"] and v["complete"], "round %d: auto route invalid: %s" % [r, v["reason"]])
@@ -374,35 +973,80 @@ func test_gameplay_simulation() -> void:
 							detours += 1
 						scorer.record_dispatch(g, 1.0, g.state == SurvivorGroup.State.BLOCKED, path.size() - 1, m.shortest_length(g.tile))
 						g.dispatch(path)
-						hz.on_dispatch()
+						next_route = time + THINK
+					elif hz.fire_lethal and g.state == SurvivorGroup.State.MOVING and not g.halt_requested and _fire_just_ahead(m, g, 5):
+						g.stop(time)
+						stops += 1
 				if not active:
 					break
 				for g in groups:
-					for ev in g.step(0.05, m):
-						if ev["type"] == "delivered":
-							scorer.record_delivery(g)
-				var fire := hz.update(0.05, m, groups)
-				if fire != CityMap.NO_TILE:
-					fires_total += 1
-					for g in groups:
-						if g.remaining_contains(fire):
-							g.request_halt(fire, time)
+					for ev in g.step(DT, m):
+						match ev["type"]:
+							"delivered":
+								scorer.record_delivery(g)
+							"casualty":
+								scorer.record_casualty()
+							"lost":
+								if ev["cause"] == "fire":
+									burned += 1
+									check(hz.fire_lethal, "round %d seed %d: training fire killed group %s" % [r, s, g.label])
+								else:
+									smoked += 1
+				var window := {}
+				for g in groups:
+					if g.state == SurvivorGroup.State.MOVING:
+						for k in range(g.index, mini(g.index + hz.fair_distance, g.path.size() - 1) + 1):
+							window[g.path[k]] = true
+				var before := m.smolders.duplicate()
+				var lit := hz.update(DT, m, groups)
+				ignitions += lit.size()
+				for p in lit:
+					check(m.get_tile(p) == CityMap.Tile.ROAD, "round %d seed %d: fire on non-road tile %s" % [r, s, p])
+				for p in hz.spotted:
+					spot_count += 1
+					var nearest := 1 << 30
 					for g in groups:
 						if g.is_active():
-							check(m.has_path(g.stop_tile()), "round %d: fire at %s strands group %s" % [r, fire, g.label])
-				time += 0.05
-			if time >= 240.0:
-				timeouts += 1
-				check(false, "round %d seed %d: simulation timed out" % [r, s])
+							nearest = mini(nearest, mini(absi(g.tile.x - p.x) + absi(g.tile.y - p.y), absi(g.next_tile().x - p.x) + absi(g.next_tile().y - p.y)))
+					for q in safe_tiles:
+						nearest = mini(nearest, absi(q.x - p.x) + absi(q.y - p.y))
+					check(m.get_tile(p) == CityMap.Tile.ROAD and not m.is_road_closure(p), "round %d seed %d: spot fire on non-road tile %s" % [r, s, p])
+					check(nearest > 3, "round %d seed %d: spot fire %s within 3 tiles of a group or the safe zone" % [r, s, p])
+					check(not window.has(p), "round %d seed %d: spot fire %s inside a fairness window" % [r, s, p])
+				for p in m.smolders:
+					if before.has(p) or hz.spotted.has(p):
+						continue
+					var next_to_fire := false
+					for d in CityMap.DIRS:
+						if m.is_fire(p + d):
+							next_to_fire = true
+					check(next_to_fire and m.get_tile(p) == CityMap.Tile.ROAD, "round %d seed %d: smolder at %s not on road next to fire" % [r, s, p])
+					check(not window.has(p), "round %d seed %d: smolder at %s inside a fairness window" % [r, s, p])
+				if not hz.fire_lethal:
+					for g in groups:
+						if g.is_active():
+							check(m.has_path(g.stop_tile()) and not m.is_fire(g.tile), "round %d seed %d: training fire traps group %s" % [r, s, g.label])
+				time += DT
+			if time >= LIMIT:
+				unresolved += 1
+			round_secs += time
 			for g in groups:
 				if g.state == SurvivorGroup.State.DELIVERED:
 					delivered += 1
-				elif g.state == SurvivorGroup.State.LOST:
-					lost += 1
-			check(scorer.total() > 0, "round %d seed %d: scoring produced %d" % [r, s, scorer.total()])
-	print("  rounds: %d, live fires: %d, detours: %d, groups delivered: %d, lost to smoke: %d, stranded: %d, timeouts: %d" % [
-		rounds, fires_total, detours, delivered, lost, stranded, timeouts])
-	check(fires_total > 0 and detours > 0, "hazards and detours should actually occur")
+	print("  %s\n    rounds: %d (avg %.0fs), spot fires: %d, ignitions: %d, STOPs: %d, detours: %d, groups delivered: %d, burned: %d, lost to smoke: %d, stranded: %d, unresolved after %.0fs: %d" % [
+		label, rounds, round_secs / rounds, spot_count, ignitions, stops, detours, delivered, burned, smoked, stranded, LIMIT, unresolved])
+	check(ignitions > 0 and stops > 0 and detours > 0, "%s: spreading fire, STOPs and detours should actually occur" % label)
+	check(unresolved * 10 <= rounds, "%s: most rounds should resolve within %.0fs (%d unresolved)" % [label, LIMIT, unresolved])
+	check(spots == (spot_count > 0), "%s: spot fires should occur only when enabled (%d)" % [label, spot_count])
+
+
+## True if fire or a smoldering tile lies within the next `tiles` steps of
+## a moving group's remaining route.
+func _fire_just_ahead(m: CityMap, g: SurvivorGroup, tiles: int) -> bool:
+	for i in range(g.index + 1, mini(g.index + 1 + tiles, g.path.size())):
+		if m.is_fire(g.path[i]) or m.is_smoldering(g.path[i]):
+			return true
+	return false
 
 
 func test_map_view_alignment() -> void:
@@ -430,6 +1074,7 @@ func test_map_view_alignment() -> void:
 func test_game_integration() -> void:
 	print("\n[game integration] main scene, rounds 1-5")
 	var game: Control = load("res://scenes/main.tscn").instantiate()
+	game.best_score_path = TEST_BEST_PATH
 	root.add_child(game)
 	game.rng.seed = 555  # after _ready(), which randomizes it
 	for i in 5:
@@ -458,13 +1103,18 @@ func test_game_integration() -> void:
 
 
 ## Plays round 1 to the end through the game controller (simulated time, live
-## hazards, detours), banks the score and advances; then fails round 2 and
-## checks that Retry replays it without banking.
+## hazards, detours), banks the score and advances; then fails round 2, which
+## ends the run: GAME OVER shows the banked score, the people saved this run
+## and a new best, and TRY AGAIN starts a fresh run from round 1. The best
+## score lives in a scratch file that is removed afterwards.
 func test_round_flow() -> void:
-	print("\n[round flow] play, bank, next round, fail, retry")
+	print("\n[round flow] play, bank, next round, game over, new run")
+	_remove_user_file(TEST_BEST_PATH)
 	var game: Control = load("res://scenes/main.tscn").instantiate()
+	game.best_score_path = TEST_BEST_PATH
 	root.add_child(game)
 	await process_frame
+	check(game.best_score == 0 and game.best_round == 0, "no best-score file: the best should start at 0")
 	game.rng.seed = 777
 	game.round_num = 1
 	game._start_round()
@@ -482,16 +1132,107 @@ func test_round_flow() -> void:
 	check(game.result_panel.visible, "result panel should show")
 	var banked: int = game.banked_score
 	check(banked == game.scorer.total() and banked > 0, "round score %d should be banked (banked %d)" % [game.scorer.total(), banked])
+	var saved_r1: int = game.scorer.delivered
+	check(game.run_saved == saved_r1 and saved_r1 > 0, "run_saved should count round 1's survivors (%d vs %d)" % [game.run_saved, saved_r1])
+	check(game.lbl_result_title.text == "ROUND COMPLETE" and game.lbl_result_total_title.text == "ROUND SCORE" and game.btn_next.text.begins_with("NEXT ROUND"),
+			"a passed round should keep its usual panel")
 	game._on_next_pressed()
 	check(game.round_num == 2 and not game.round_over and not game.result_panel.visible, "Next Round should start round 2")
+
+	# Fail round 2 with a single survivor delivered: fewer than half get out.
+	var first: SurvivorGroup = game.groups[0]
+	first.survivors = 1
+	first.state = SurvivorGroup.State.DELIVERED
+	game._on_group_event(first, {"type": "delivered", "tile": first.tile})
+	for i in range(1, game.groups.size()):
+		game.groups[i].state = SurvivorGroup.State.LOST
+	game._process(0.05)
+	check(game.round_over and not game.last_round_success, "one survivor out of round 2 should fail it")
+	check(game.banked_score == banked, "a failed round must not bank points")
+	check(game.lbl_result_title.text == "GAME OVER", "a failed round should show GAME OVER, got %s" % game.lbl_result_title.text)
+	check(game.lbl_result_total_title.text == "FINAL SCORE" and game.lbl_result_total.text == str(banked),
+			"GAME OVER should show the banked %d as the final score, got %s" % [banked, game.lbl_result_total.text])
+	check(game.run_saved == saved_r1 + 1 and game.lbl_result_saved.text == str(saved_r1 + 1),
+			"people saved should include the failed round's survivor (%d, shown %s)" % [game.run_saved, game.lbl_result_saved.text])
+	check(game.lbl_result_sub.text.begins_with("REACHED ROUND 2"), "GAME OVER should show the round reached, got %s" % game.lbl_result_sub.text)
+	check(game.btn_next.text.begins_with("TRY AGAIN"), "GAME OVER should offer Try Again")
+	check(game.new_best and game.best_score == banked and game.best_round == 2 and game.lbl_result_note.text.contains("NEW BEST!"),
+			"the first game over should set a new best (%d, round %d)" % [game.best_score, game.best_round])
+	game.best_score = 0
+	game._load_best_score()
+	check(game.best_score == banked and game.best_round == 2, "the best score should survive a reload (%d)" % game.best_score)
+
+	# TRY AGAIN starts a new run.
+	game._on_next_pressed()
+	check(game.round_num == 1 and game.banked_score == 0 and game.run_saved == 0 and not game.new_best,
+			"Try Again should start a new run at round 1 with nothing carried over")
+	check(not game.round_over and not game.result_panel.visible and game.lbl_score.text == "0", "the new run should be in play with score 0")
+
+	# Tying the best is not enough; it has to be beaten.
+	game.banked_score = banked
 	for g in game.groups:
 		g.state = SurvivorGroup.State.LOST
 	game._process(0.05)
-	check(game.round_over and not game.last_round_success, "losing every group should fail the round")
-	check(game.banked_score == banked, "a failed round must not bank points")
-	check(game.btn_next.text.begins_with("TRY AGAIN"), "failed round should offer Try Again")
+	check(game.round_over and not game.new_best and game.best_score == banked and not game.lbl_result_note.text.contains("NEW BEST"),
+			"a tied score must not count as a new best")
 	game._on_next_pressed()
-	check(game.round_num == 2 and not game.round_over, "Retry should replay round 2")
-	print("  round 1 cleared in %.1fs of game time, banked %d; round 2 failed and retried" % [t, banked])
+	game.banked_score = banked + 10
+	for g in game.groups:
+		g.state = SurvivorGroup.State.LOST
+	game._process(0.05)
+	check(game.new_best and game.best_score == banked + 10 and game.best_round == 1, "a higher score should become the new best")
+	game.best_score = 0
+	game._load_best_score()
+	check(game.best_score == banked + 10, "the higher best should be stored (%d)" % game.best_score)
+	print("  round 1 cleared in %.1fs of game time, banked %d; round 2 failed -> game over (saved %d, best %d); new runs checked" % [
+		t, banked, saved_r1 + 1, banked])
 	game.queue_free()
 	await process_frame
+	_remove_user_file(TEST_BEST_PATH)
+
+
+## A missing, unreadable or malformed best-score file counts as no best, and a
+## failed save is logged; none of them stop the game.
+func test_best_score_file() -> void:
+	print("\n[best score] missing, broken and unwritable files")
+	_remove_user_file(TEST_BEST_PATH)
+	var game: Control = load("res://scenes/main.tscn").instantiate()
+	game.best_score_path = TEST_BEST_PATH
+	root.add_child(game)
+	await process_frame
+	check(game.best_score == 0 and game.best_round == 0, "missing file: the best should be 0")
+	var f := FileAccess.open(TEST_BEST_PATH, FileAccess.WRITE)
+	f.store_string("[best]\nscore = \"unterminated\nround = {{{\n")
+	f.close()
+	game.best_score = 123
+	game._load_best_score()  # expect one engine parse error in the output
+	check(game.best_score == 0 and game.best_round == 0, "unreadable file: the best should be 0")
+	var cfg := ConfigFile.new()
+	cfg.set_value("best", "score", "lots")
+	cfg.set_value("best", "round", 3)
+	cfg.save(TEST_BEST_PATH)
+	game._load_best_score()
+	check(game.best_score == 0 and game.best_round == 0, "malformed values: the best should be 0")
+	# A path that can't be written: logged, and play goes on. (Expect one warning.)
+	game.best_score_path = "user://no_such_dir/nested/best_score.cfg"
+	game.best_score = 50
+	game.best_round = 2
+	game._save_best_score()
+	check(game.log_lines[-1].contains("Could not save the best score"), "a failed save should be logged")
+	game.banked_score = 80
+	for g in game.groups:
+		g.state = SurvivorGroup.State.LOST
+	game._process(0.05)
+	check(game.round_over and game.lbl_result_title.text == "GAME OVER" and game.best_score == 80,
+			"the game should still end the run and keep the new best in memory")
+	game._on_next_pressed()
+	check(game.round_num == 1 and not game.round_over, "and a new run should still start")
+	print("  missing, unreadable, malformed and unwritable files handled")
+	game.queue_free()
+	await process_frame
+	_remove_user_file(TEST_BEST_PATH)
+
+
+func _remove_user_file(path: String) -> void:
+	if FileAccess.file_exists(path):
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(path))

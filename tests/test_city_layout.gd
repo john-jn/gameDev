@@ -296,6 +296,18 @@ func test_render_styles() -> void:
 	mv.route_complete = true
 	check(not m.fires.is_empty() and not m.road_closures.is_empty(), "test map should have fires and closures to draw")
 	mv.alert_tiles.append(m.fires.keys()[0])
+	# Spreading fire: a smoldering tile next to a fire, and a group losing
+	# people to smoke (countdown ring).
+	for d in CityMap.DIRS:
+		m.add_smolder(m.fires.keys()[0] + d, 1.0)
+	var drainer := groups[2]
+	for d in CityMap.DIRS:
+		if m.get_tile(drainer.tile + d) == CityMap.Tile.ROAD:
+			m.add_fire(drainer.tile + d)
+			break
+	drainer.smoke_drain = 2.0
+	drainer.smoke_timer = 1.2
+	check(not m.smolders.is_empty() and drainer.is_draining(m), "test map should have embers and a draining group to draw")
 	for name in themes:
 		mv.visual_theme = themes[name]
 		mv._hover = m.buildings[0].cells[0]
