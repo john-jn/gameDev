@@ -10,7 +10,16 @@ var events_remaining := 0
 var min_delay := 2.0
 var max_delay := 3.5
 var _cooldown := -1.0  ## seconds until the next attempt
+var _cooldown_duration := 1.0
 var _rng: RandomNumberGenerator
+var seconds_to_next_event: float:
+	get:
+		return maxf(0.0, _cooldown) if events_remaining > 0 else 0.0
+var next_event_progress: float:
+	get:
+		if _cooldown_duration <= 0.0:
+			return 0.0
+		return clampf(1.0 - _cooldown / _cooldown_duration, 0.0, 1.0)
 
 
 func setup(round_num: int, rng: RandomNumberGenerator) -> void:
@@ -21,7 +30,7 @@ func setup(round_num: int, rng: RandomNumberGenerator) -> void:
 	events_remaining = mini(6, 2 + round_num)
 	min_delay = maxf(2.0, 9.0 - 1.0 * (round_num - 1))
 	max_delay = min_delay + maxf(1.5, 5.0 - 0.5 * (round_num - 1))
-	_cooldown = _rng.randf_range(min_delay * 1.2, min_delay * 1.6)
+	_set_cooldown(_rng.randf_range(min_delay * 1.2, min_delay * 1.6))
 
 
 ## Kept as a compatibility hook for callers from the old dispatch-driven model.
@@ -45,12 +54,17 @@ func update(delta: float, map: CityMap, groups: Array[SurvivorGroup]) -> Vector2
 		return CityMap.NO_TILE
 	var tile := _pick_tile(map, groups)
 	if tile == CityMap.NO_TILE:
-		_cooldown = 0.35  # no safe candidate right now; retry without rearming
+		_set_cooldown(0.35)  # no safe candidate right now; retry without rearming
 		return CityMap.NO_TILE
 	map.add_fire(tile)
 	events_remaining -= 1
-	_cooldown = _rng.randf_range(min_delay, max_delay) if events_remaining > 0 else 0.0
+	_set_cooldown(_rng.randf_range(min_delay, max_delay) if events_remaining > 0 else 0.0)
 	return tile
+
+
+func _set_cooldown(seconds: float) -> void:
+	_cooldown = seconds
+	_cooldown_duration = seconds
 
 
 func _pick_tile(map: CityMap, groups: Array[SurvivorGroup]) -> Vector2i:

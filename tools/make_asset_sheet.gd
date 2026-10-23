@@ -3,14 +3,7 @@ extends SceneTree
 ## current code-drawn placeholder shown where one exists.
 ## godot --path . --script res://tools/make_asset_sheet.gd   (needs a window, so not --headless)
 
-const BG := Color("0a0f1a")
-const CARD := Color("141c2b")
-const EDGE := Color("3a475c")
-const TXT := Color("d7e1f0")
-const DIM := Color("7f8ea8")
-const ACCENT := Color("38c6f4")
-const NEED := Color("ffb020")
-const OK := Color("39d98a")
+const PALETTE := preload("res://scripts/ui_palette.gd")
 
 # [group, title, size, status, preview kind or "", note]
 const ITEMS := [
@@ -54,13 +47,13 @@ class Preview extends Control:
 		var s := 86.0
 		var r := Rect2((size - Vector2(s, s)) * 0.5, Vector2(s, s))
 		if kind == "":
-			var c := Color("56627a")
+			var c := PALETTE.TEAL_MID
 			draw_rect(r, Color(c, 0.12))
 			for i in 4:
 				var a := r.position + Vector2(0 if i % 2 == 0 else s, 0 if i < 2 else s)
 				draw_line(a, a + Vector2(14 if i % 2 == 0 else -14, 0), c, 2)
 				draw_line(a, a + Vector2(0, 14 if i < 2 else -14), c, 2)
-			draw_string(font, r.position + Vector2(0, s * 0.58), "NO ART YET", HORIZONTAL_ALIGNMENT_CENTER, s, 12, Color("ffb020"))
+			draw_string(font, r.position + Vector2(0, s * 0.58), "NO ART YET", HORIZONTAL_ALIGNMENT_CENTER, s, 12, PALETTE.MINT)
 			return
 		MapPainter.draw_legend_symbol(self, th, kind, r, font)
 
@@ -84,7 +77,7 @@ func _initialize() -> void:
 	svp.add_child(root_ctl)
 	root_ctl.size = Vector2(sz)
 	var bg := ColorRect.new()
-	bg.color = BG
+	bg.color = PALETTE.BG_DARK
 	bg.size = Vector2(sz)
 	root_ctl.add_child(bg)
 	var margin := MarginContainer.new()
@@ -99,12 +92,12 @@ func _initialize() -> void:
 
 	var head := HBoxContainer.new()
 	v.add_child(head)
-	head.add_child(_lbl("EVAC GRID  -  ASSET SHEET", 34, ACCENT, true))
-	var intro := _lbl("Previews show today's placeholders. Replace each with PNG art (transparent, top-down, dark teal/cyan style). Slots in visual_theme.gd: building_textures, park_texture, survivor_texture, fire_texture. The rest need new slots.   TEMP = code-drawn placeholder, needs real art.   NEW = does not exist yet.", 14, DIM)
+	head.add_child(_lbl("EVAC GRID  -  ASSET SHEET", 34, PALETTE.CYAN, true))
+	var intro := _lbl("Previews show today's placeholders. Replace each with PNG art (transparent, top-down, shared palette). Slots in visual_theme.gd: building_textures, park_texture, survivor_texture, fire_texture. The rest need new slots.   TEMP = code-drawn placeholder, needs real art.   NEW = does not exist yet.", 14, PALETTE.TEAL_MID)
 	v.add_child(intro)
 
 	for group in ["MAP", "UI"]:
-		v.add_child(_lbl("MAP ART" if group == "MAP" else "INTERFACE ART", 20, TXT, true))
+		v.add_child(_lbl("MAP ART" if group == "MAP" else "INTERFACE ART", 20, PALETTE.WHITE, true))
 		var grid := GridContainer.new()
 		grid.columns = 5
 		grid.add_theme_constant_override("h_separation", 12)
@@ -115,15 +108,15 @@ func _initialize() -> void:
 				continue
 			grid.add_child(_card(it))
 
-	v.add_child(_lbl("Fonts: Rajdhani UI font = DONE.   Digital/7-segment font for clock and score = TEMP.   Sound: see SOUND_GUIDE.md.", 15, OK))
+	v.add_child(_lbl("Fonts: Rajdhani UI font = DONE.   Digital/7-segment font for clock and score = TEMP.   Sound: see SOUND_GUIDE.md.", 15, PALETTE.GREEN))
 
 
 func _card(it: Array) -> Control:
 	var p := PanelContainer.new()
 	p.custom_minimum_size = Vector2(330, 0)
 	var sb := StyleBoxFlat.new()
-	sb.bg_color = CARD
-	sb.border_color = EDGE
+	sb.bg_color = PALETTE.PANEL
+	sb.border_color = PALETTE.TEAL
 	sb.set_border_width_all(2)
 	sb.set_corner_radius_all(6)
 	sb.set_content_margin_all(8)
@@ -134,13 +127,13 @@ func _card(it: Array) -> Control:
 	b.add_child(Preview.new(it[4], th, font))
 	var row := HBoxContainer.new()
 	b.add_child(row)
-	var t := _lbl(it[1], 17, TXT, true)
+	var t := _lbl(it[1], 17, PALETTE.WHITE, true)
 	t.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	row.add_child(t)
-	var tag := _lbl(it[3], 13, NEED if it[3] == "TEMP" else Color("ff6b5c"), true)
+	var tag := _lbl(it[3], 13, PALETTE.MINT if it[3] == "TEMP" else PALETTE.ALERT, true)
 	row.add_child(tag)
-	b.add_child(_lbl(it[2], 14, ACCENT))
-	b.add_child(_lbl(it[5], 13, DIM))
+	b.add_child(_lbl(it[2], 14, PALETTE.CYAN))
+	b.add_child(_lbl(it[5], 13, PALETTE.TEAL_MID))
 	return p
 
 

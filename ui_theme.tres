@@ -1,0 +1,29 @@
+[gd_resource type="Theme" load_steps=3 format=3]
+
+[ext_resource type="FontFile" path="res://assets/fonts/Rajdhani-Medium.ttf" id="1_font"]
+
+[sub_resource type="StyleBoxFlat" id="PanelStyle"]
+bg_color = Color(0.0352941, 0.145098, 0.160784, 1)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.109804, 0.309804, 0.305882, 1)
+corner_radius_top_left = 4
+corner_radius_top_right = 4
+corner_radius_bottom_right = 4
+corner_radius_bottom_left = 4
+content_margin_left = 8.0
+content_margin_top = 8.0
+content_margin_right = 8.0
+content_margin_bottom = 8.0
+
+[resource]
+default_font = ExtResource("1_font")
+default_font_size = 14
+Label/colors/font_color = Color(0.901961, 1, 0.972549, 1)
+Button/colors/font_color = Color(0.235294, 1, 0.815686, 1)
+Button/colors/font_hover_color = Color(0.901961, 1, 0.972549, 1)
+Button/colors/font_pressed_color = Color(0.235294, 1, 0.815686, 1)
+Button/colors/font_disabled_color = Color(0.203922, 0.509804, 0.439216, 1)
+PanelContainer/styles/panel = SubResource("PanelStyle")

@@ -11,6 +11,8 @@ extends RefCounted
 ## Lot geometry (footprint outlines, rooftop details, entrances) is built once
 ## per map in tile units by lot_shape(); painters scale it with a Transform2D.
 
+const UI_COLORS = preload("res://scripts/ui_colors.gd")
+
 ## Tile sides in order top, right, bottom, left. Bit k of a side mask is SIDES[k].
 const SIDES := [Vector2i(0, -1), Vector2i(1, 0), Vector2i(0, 1), Vector2i(-1, 0)]
 ## Corner where side k starts, walking each tile clockwise on screen (y down).
@@ -20,6 +22,11 @@ const INWARD := [Vector2(0, 1), Vector2(-1, 0), Vector2(0, -1), Vector2(1, 0)]
 const FRONTS := [Vector2(0, 1), Vector2(-1, 0), Vector2(0, -1), Vector2(1, 0)]
 const SEAM_RIGHT := 1
 const SEAM_DOWN := 2
+const AUTOTILE_CELL_SIZE := 128.0
+const AUTOTILE_CORNER_SIDES := [[0, 3], [0, 1], [1, 2], [2, 3]]
+const AUTOTILE_CORNER_DIAGONALS := [
+	Vector2i(-1, -1), Vector2i(1, -1), Vector2i(1, 1), Vector2i(-1, 1)
+]
 
 enum Marking { NONE, ALONG_X, ALONG_Y }
 
@@ -219,7 +226,13 @@ static func _cell_bounds(cells: Array[Vector2i]) -> Rect2:
 ## One road tile. `curbs` is a side mask of edges facing non-road ground;
 ## `marking` the centre dash of a one-lane street; `seams` (SEAM_*) the lane
 ## divider on the right or bottom edge of an avenue tile.
-static func draw_road(ci: CanvasItem, th: VisualTheme, r: Rect2, road_class: int, curbs: int, marking: int, seams: int) -> void:
+## `connections` is a road-neighbour mask in N/E/S/W order, or -1 for fallback.
+static func draw_road(ci: CanvasItem, th: VisualTheme, r: Rect2, road_class: int, curbs: int, marking: int, seams: int, connections: int = -1) -> void:
+	var road_texture := th.avenue_texture if road_class == CityMap.RoadClass.AVENUE else th.street_texture
+	if road_texture != null and connections >= 0:
+		var source := Vector2(connections % 4, floori(connections / 4.0)) * AUTOTILE_CELL_SIZE
+		ci.draw_texture_rect_region(road_texture, r, Rect2(source, Vector2.ONE * AUTOTILE_CELL_SIZE))
+		return
 	ci.draw_rect(r, th.avenue if road_class == CityMap.RoadClass.AVENUE else th.road)
 	var mw := maxf(1.0, r.size.x * th.road_marking_ratio)
 	var c := r.get_center()
@@ -236,6 +249,10 @@ static func draw_road(ci: CanvasItem, th: VisualTheme, r: Rect2, road_class: int
 
 ## A road closed by rubble: hatched tarmac with a barrier toward open road.
 static func draw_closed_road(ci: CanvasItem, th: VisualTheme, r: Rect2, barriers: int, curbs: int) -> void:
+	if th.closed_road_texture != null:
+		ci.draw_rect(r, th.closed_road)
+		ci.draw_texture_rect(th.closed_road_texture, r, false)
+		return
 	ci.draw_rect(r, th.closed_road)
 	_hatch(ci, r, th.closed_hatch, maxf(1.0, r.size.x * 0.05))
 	_draw_sides(ci, r, curbs, th.road_edge, th.road_edge_width)
@@ -254,8 +271,18 @@ static func draw_closed_road(ci: CanvasItem, th: VisualTheme, r: Rect2, barriers
 static func draw_lot(ci: CanvasItem, th: VisualTheme, b: CityBuilding, s: LotShape, xf: Transform2D, ts: float) -> void:
 	var poly := xf * s.outline
 	if b.kind == CityBuilding.Kind.PARK:
-		_fill(ci, poly, th.park_fill, s.uvs, th.park_texture)
-		if th.park_texture == null:
+		if th.park_texture != null and b.is_rect() and b.bounds.size == Vector2i(2, 2) and b.cells.size() == 4:
+			var park_position := xf * Vector2(b.bounds.position)
+			var park_rect := Rect2(park_position, Vector2(b.bounds.size) * ts)
+			ci.draw_texture_rect(th.park_texture, park_rect, false)
+			return
+		else:
+			if th.park_grass_texture != null:
+				for p in b.cells:
+					ci.draw_texture_rect(th.park_grass_texture,
+							Rect2(xf * Vector2(p), Vector2.ONE * ts), false)
+			else:
+				ci.draw_colored_polygon(poly, th.park_fill)
 			var d := maxf(1.0, ts * 0.045)
 			for p in s.dots:
 				ci.draw_rect(Rect2(xf * p - Vector2(d, d) * 0.5, Vector2(d, d)), th.park_detail)
@@ -264,20 +291,63 @@ static func draw_lot(ci: CanvasItem, th: VisualTheme, b: CityBuilding, s: LotSha
 				ci.draw_arc(xf * p, ts * 0.17, 0, TAU, 16, th.park_detail, 1.0, true)
 		_closed_line(ci, poly, th.park_edge, 1.0)
 		return
-	var tex := th.building_texture(b.variant)
-	_fill(ci, poly, th.building_fill(b.variant), s.uvs, tex)
-	if tex == null:
-		for h in s.holes:
-			var hp := xf * h
-			ci.draw_colored_polygon(hp, th.block_ground)
-			_closed_line(ci, hp, th.building_detail, th.building_detail_width)
-		for so in s.solids:
-			ci.draw_colored_polygon(xf * so, th.building_detail)
-		if not s.lines.is_empty():
-			ci.draw_multiline(xf * s.lines, th.building_detail, th.building_detail_width)
+	var autotile := th.building_autotile_texture(b.variant)
+	if autotile != null:
+		_draw_building_autotile(ci, autotile, b, xf)
+	else:
+		var tex := th.building_texture(b.variant)
+		_fill(ci, poly, th.building_fill(b.variant), s.uvs, tex)
+		if tex == null:
+			for h in s.holes:
+				var hp := xf * h
+				ci.draw_colored_polygon(hp, th.block_ground)
+				_closed_line(ci, hp, th.building_detail, th.building_detail_width)
+			for so in s.solids:
+				ci.draw_colored_polygon(xf * so, th.building_detail)
+			if not s.lines.is_empty():
+				ci.draw_multiline(xf * s.lines, th.building_detail, th.building_detail_width)
 	if th.building_glow.a > 0.0:
 		_closed_line(ci, poly, th.building_glow, th.building_glow_width)
 	_closed_line(ci, poly, th.building_outline, th.building_outline_width)
+
+
+static func _draw_building_autotile(ci: CanvasItem, tex: Texture2D, b: CityBuilding, xf: Transform2D) -> void:
+	var occupied := {}
+	for cell in b.cells:
+		occupied[cell] = true
+	for cell in b.cells:
+		var mask := 0
+		for side in 4:
+			if occupied.has(cell + _rotate_tile_direction(SIDES[side], b.rotation)):
+				mask |= 1 << side
+		_draw_autotile_piece(ci, tex, mask, Vector2(cell), xf, b.rotation)
+		for corner in 4:
+			var sides: Array = AUTOTILE_CORNER_SIDES[corner]
+			var first_side: Vector2i = _rotate_tile_direction(SIDES[sides[0]], b.rotation)
+			var second_side: Vector2i = _rotate_tile_direction(SIDES[sides[1]], b.rotation)
+			var diagonal := _rotate_tile_direction(AUTOTILE_CORNER_DIAGONALS[corner], b.rotation)
+			if occupied.has(cell + first_side) and occupied.has(cell + second_side) and not occupied.has(cell + diagonal):
+				_draw_autotile_piece(ci, tex, 16 + corner, Vector2(cell), xf, b.rotation)
+
+
+static func _rotate_tile_direction(direction: Vector2i, quarter_turns: int) -> Vector2i:
+	var rotated := direction
+	for turn in posmod(quarter_turns, 4):
+		rotated = Vector2i(-rotated.y, rotated.x)
+	return rotated
+
+
+static func _draw_autotile_piece(ci: CanvasItem, tex: Texture2D, piece: int, origin: Vector2, xf: Transform2D, quarter_turns: int) -> void:
+	var source := Vector2(piece % 4, floori(piece / 4.0)) * AUTOTILE_CELL_SIZE
+	var points := PackedVector2Array()
+	var uvs := PackedVector2Array()
+	for corner in 4:
+		var point := Vector2(CORNERS[corner])
+		points.append(xf * (origin + point))
+		for turn in posmod(quarter_turns, 4):
+			point = Vector2(point.y, 1.0 - point.x)
+		uvs.append((source + point * AUTOTILE_CELL_SIZE) / Vector2(tex.get_size()))
+	ci.draw_colored_polygon(points, UiPalette.WHITE, uvs, tex)
 
 
 ## Debug aid: a lot's outline and its entrance strips.
@@ -313,7 +383,10 @@ static func draw_building_flat(ci: CanvasItem, th: VisualTheme, r: Rect2, varian
 
 
 static func draw_park_flat(ci: CanvasItem, th: VisualTheme, r: Rect2) -> void:
-	ci.draw_rect(r.grow(-maxf(1.0, r.size.x * 0.06)), th.park_fill)
+	if th.park_grass_texture != null:
+		ci.draw_texture_rect(th.park_grass_texture, r, false)
+	else:
+		ci.draw_rect(r.grow(-maxf(1.0, r.size.x * 0.06)), th.park_fill)
 	ci.draw_circle(r.get_center(), r.size.x * 0.26, th.park_tree)
 
 
@@ -331,7 +404,10 @@ static func draw_safe_zone(ci: CanvasItem, th: VisualTheme, font: Font, outline:
 		return
 	var lift := emphasis * pulse
 	_closed_line(ci, outline, Color(th.safe_glow, th.safe_glow.a * (0.6 + 0.8 * lift)), th.safe_glow_width * (1.0 + 0.4 * lift))
-	ci.draw_colored_polygon(outline, Color(th.safe_fill, th.safe_fill.a * (1.0 + lift)))
+	if th.safe_zone_texture != null:
+		ci.draw_texture_rect(th.safe_zone_texture, bounds, false)
+	else:
+		ci.draw_colored_polygon(outline, Color(th.safe_fill, th.safe_fill.a * (1.0 + lift)))
 	for d in doors:
 		ci.draw_colored_polygon(d, th.safe_outline)
 	_closed_line(ci, outline, th.safe_outline, th.safe_outline_width)
@@ -348,6 +424,16 @@ static func _safe_badge(ci: CanvasItem, th: VisualTheme, font: Font, r: Rect2, t
 	var bar_h := Rect2(c.x - arm, c.y - thick * 0.5 - arm * 0.35, arm * 2.0, thick)
 	var bar_v := Rect2(c.x - thick * 0.5, c.y - arm - arm * 0.35, thick, arm * 2.0)
 	var text_c := c + Vector2(0, arm * 1.15 + (2.0 if outlined else 0.0))
+	if th.safe_zone_texture != null and outlined:
+		var label_size := int(clampf(ts * 0.5, 14.0, 18.0))
+		var label_width := font.get_string_size(th.safe_label_text, HORIZONTAL_ALIGNMENT_LEFT, -1, label_size).x
+		var baseline := Vector2(text_c.x - label_width * 0.5,
+				text_c.y + (font.get_ascent(label_size) - font.get_descent(label_size)) * 0.5)
+		ci.draw_string_outline(font, baseline, th.safe_label_text,
+				HORIZONTAL_ALIGNMENT_LEFT, -1, label_size, 2, UI_COLORS.BG_DARK)
+		ci.draw_string(font, baseline, th.safe_label_text,
+				HORIZONTAL_ALIGNMENT_LEFT, -1, label_size, th.safe_label)
+		return
 	if outlined:
 		ci.draw_rect(bar_h.grow(1.5), th.outline)
 		ci.draw_rect(bar_v.grow(1.5), th.outline)
@@ -359,45 +445,74 @@ static func _safe_badge(ci: CanvasItem, th: VisualTheme, font: Font, r: Rect2, t
 	draw_text_centered(ci, font, text_c, th.safe_label_text, fs, th.safe_label)
 
 
-static func draw_smoke(ci: CanvasItem, th: VisualTheme, r: Rect2) -> void:
+static func draw_smoke(ci: CanvasItem, th: VisualTheme, r: Rect2, time: float = 0.0) -> void:
+	if th.smoke_sheet_texture != null:
+		var frame_count := maxi(1, floori(float(th.smoke_sheet_texture.get_width()) / 128.0))
+		var frame := posmod(floori(time * 4.0), frame_count)
+		ci.draw_texture_rect_region(th.smoke_sheet_texture, r, Rect2(frame * 128, 0, 128, 128))
+		return
+	if th.smoke_texture != null:
+		ci.draw_texture_rect(th.smoke_texture, r, false)
+		return
 	ci.draw_rect(r, th.smoke)
 	_hatch(ci, r, th.smoke_line, maxf(1.0, r.size.x * 0.06))
 
 
 static func draw_fire(ci: CanvasItem, th: VisualTheme, r: Rect2, time: float) -> void:
-	var c := r.get_center()
-	if th.fire_glow.a > 0.0:
-		var g := 0.5 + 0.5 * sin(time * 6.0 + r.position.x * 0.1)
-		ci.draw_circle(c, r.size.x * (0.74 + 0.08 * g), Color(th.fire_glow, th.fire_glow.a * 0.45))
-		ci.draw_circle(c, r.size.x * 0.6, th.fire_glow)
 	var body := r.grow(-1.0)
+	if th.fire_sheet_texture != null:
+		var frame_count := maxi(1, floori(float(th.fire_sheet_texture.get_width()) / 128.0))
+		var frame := posmod(floori(time * 10.0), frame_count)
+		ci.draw_texture_rect_region(th.fire_sheet_texture, body, Rect2(frame * 128, 0, 128, 128))
+		return
 	if th.fire_texture != null:
 		ci.draw_texture_rect(th.fire_texture, body, false)
-	else:
-		ci.draw_rect(body, th.fire)
+		return
+	ci.draw_rect(body, th.fire)
+	var c := r.get_center()
 	var x := body.grow(-r.size.x * 0.12)
 	var w := maxf(2.0, r.size.x * 0.08)
 	ci.draw_line(x.position, x.end, th.outline, w, true)
 	ci.draw_line(Vector2(x.end.x, x.position.y), Vector2(x.position.x, x.end.y), th.outline, w, true)
-	if th.fire_texture == null:
-		var flick := 1.0 + 0.12 * sin(time * 13.0 + r.position.x)
-		var s := r.size.x * 0.24 * flick
-		ci.draw_colored_polygon(PackedVector2Array([c + Vector2(0, -s * 1.2), c + Vector2(s * 0.8, s * 0.7), c + Vector2(-s * 0.8, s * 0.7)]), th.fire_core)
+	var flick := 1.0 + 0.12 * sin(time * 13.0 + r.position.x)
+	var s := r.size.x * 0.24 * flick
+	ci.draw_colored_polygon(PackedVector2Array([c + Vector2(0, -s * 1.2), c + Vector2(s * 0.8, s * 0.7), c + Vector2(-s * 0.8, s * 0.7)]), th.fire_core)
 
 
-static func draw_survivor(ci: CanvasItem, th: VisualTheme, font: Font, c: Vector2, rad: float, label: String, count: int, fill: Color) -> void:
-	ci.draw_circle(c, rad + 2.0, th.outline)
-	if th.survivor_texture != null:
-		var tint := Color.WHITE if fill == th.survivor else fill.lightened(0.3)
+static func draw_survivor(ci: CanvasItem, th: VisualTheme, font: Font, c: Vector2, rad: float,
+		label: String, count: int, fill: Color, dimmed: bool = false) -> void:
+	var group_texture: Texture2D
+	if label == "A":
+		group_texture = th.survivor_group_a_texture
+	elif label == "B":
+		group_texture = th.survivor_group_b_texture
+	if group_texture != null:
+		ci.draw_texture_rect(group_texture, Rect2(c - Vector2(rad, rad), Vector2(rad, rad) * 2.0),
+				false, Color(UI_COLORS.WHITE, 0.38) if dimmed else UI_COLORS.WHITE)
+	elif th.survivor_texture != null:
+		ci.draw_circle(c, rad + 2.0, th.outline)
+		var tint := UI_COLORS.WHITE if fill == th.survivor else fill.lightened(0.3)
+		if dimmed:
+			tint.a = 0.38
 		ci.draw_texture_rect(th.survivor_texture, Rect2(c - Vector2(rad, rad), Vector2(rad, rad) * 2.0), false, tint)
 	else:
-		ci.draw_circle(c, rad, fill)
-	draw_text_centered(ci, font, c, label, int(maxf(9.0, rad * 1.1)), th.outline)
+		ci.draw_circle(c, rad + 2.0, th.outline)
+		ci.draw_circle(c, rad, Color(fill, 0.38) if dimmed else fill)
+	var label_size := int(maxf(11.0, rad * 1.12))
+	ci.draw_string_outline(font, Vector2(c.x, c.y + font.get_ascent(label_size) * 0.34),
+			label, HORIZONTAL_ALIGNMENT_CENTER, -1, label_size, 3, UI_COLORS.BG_DARK)
+	ci.draw_string(font, Vector2(c.x, c.y + font.get_ascent(label_size) * 0.34),
+			label, HORIZONTAL_ALIGNMENT_CENTER, -1, label_size, UI_COLORS.WHITE)
 	if count >= 0:
 		var bc := c + Vector2(rad * 0.9, -rad * 0.9)
-		var br := maxf(6.0, rad * 0.5)
-		ci.draw_circle(bc, br, th.outline)
-		draw_text_centered(ci, font, bc, str(count), int(maxf(8.0, br * 1.3)), th.badge_text)
+		var br := maxf(8.0, rad * 0.58)
+		ci.draw_circle(bc, br, UI_COLORS.BG_DARK)
+		ci.draw_circle(bc, br - 2.0, UI_COLORS.TEAM_A_COLOR if label == "A" else UI_COLORS.TEAM_B_COLOR)
+		var count_size := int(maxf(11.0, br * 1.4))
+		ci.draw_string_outline(font, Vector2(bc.x, bc.y + font.get_ascent(count_size) * 0.34),
+				str(count), HORIZONTAL_ALIGNMENT_CENTER, -1, count_size, 2, UI_COLORS.BG_DARK)
+		ci.draw_string(font, Vector2(bc.x, bc.y + font.get_ascent(count_size) * 0.34),
+				str(count), HORIZONTAL_ALIGNMENT_CENTER, -1, count_size, UI_COLORS.WHITE)
 
 
 static func draw_text_centered(ci: CanvasItem, font: Font, center: Vector2, text: String, font_size: int, color: Color) -> void:
@@ -479,7 +594,7 @@ static func _legend_road(ci: CanvasItem, th: VisualTheme, r: Rect2) -> void:
 
 static func _fill(ci: CanvasItem, poly: PackedVector2Array, color: Color, uvs: PackedVector2Array, tex: Texture2D) -> void:
 	if tex != null:
-		ci.draw_colored_polygon(poly, Color.WHITE, uvs, tex)
+		ci.draw_colored_polygon(poly, UiPalette.WHITE, uvs, tex)
 	else:
 		ci.draw_colored_polygon(poly, color)
 

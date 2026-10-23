@@ -8,6 +8,8 @@ extends SceneTree
 ## Headless rendering draws nothing, so these tests check geometry, state and
 ## input; tests/capture_screenshots.gd is for looking at the result.
 
+const UI_COLORS = preload("res://scripts/ui_colors.gd")
+
 var failures := 0
 var checks := 0
 var seeds_per_round := 12
@@ -275,12 +277,70 @@ func test_render_styles() -> void:
 	art.park_texture = _generated_texture(Color.DARK_GREEN)
 	art.survivor_texture = _generated_texture(Color.YELLOW)
 	art.fire_texture = _generated_texture(Color.ORANGE_RED)
+	var autotiled := VisualTheme.dispatch_style()
+	var sheet_image := Image.create(512, 640, false, Image.FORMAT_RGBA8)
+	sheet_image.fill(Color.AQUA)
+	autotiled.building_autotile_textures.append(ImageTexture.create_from_image(sheet_image))
+	var road_image := Image.create(512, 512, false, Image.FORMAT_RGBA8)
+	road_image.fill(Color.DARK_SLATE_GRAY)
+	autotiled.street_texture = ImageTexture.create_from_image(road_image)
+	autotiled.avenue_texture = ImageTexture.create_from_image(road_image)
+	autotiled.closed_road_texture = _generated_texture(Color("303030"))
+	var park_image := Image.create(256, 256, false, Image.FORMAT_RGBA8)
+	park_image.fill(Color.DARK_GREEN)
+	autotiled.park_texture = ImageTexture.create_from_image(park_image)
+	autotiled.park_grass_texture = _generated_texture(Color.DARK_GREEN)
+	autotiled.survivor_texture = _generated_texture(Color.YELLOW)
+	autotiled.survivor_group_a_texture = _generated_texture(Color.CYAN)
+	autotiled.survivor_group_b_texture = _generated_texture(Color.GREEN)
+	var safe_image := Image.create(384, 384, false, Image.FORMAT_RGBA8)
+	safe_image.fill(Color.GREEN)
+	autotiled.safe_zone_texture = ImageTexture.create_from_image(safe_image)
+	var fire_image := Image.create(1024, 128, false, Image.FORMAT_RGBA8)
+	fire_image.fill(Color.ORANGE_RED)
+	autotiled.fire_sheet_texture = ImageTexture.create_from_image(fire_image)
+	autotiled.smoke_texture = _generated_texture(Color.GRAY)
+	var smoke_sheet_image := Image.create(512, 128, false, Image.FORMAT_RGBA8)
+	smoke_sheet_image.fill(Color.GRAY)
+	autotiled.smoke_sheet_texture = ImageTexture.create_from_image(smoke_sheet_image)
+	var pulse_ring_image := Image.create(576, 96, false, Image.FORMAT_RGBA8)
+	pulse_ring_image.fill(Color.WHITE)
+	autotiled.pulse_ring_texture = ImageTexture.create_from_image(pulse_ring_image)
+	autotiled.select_brackets_texture = _generated_texture(Color.WHITE)
+	autotiled.route_start_texture = _generated_texture(Color.WHITE)
+	autotiled.route_straight_texture = _generated_texture(Color.WHITE)
+	autotiled.route_corner_texture = _generated_texture(Color.WHITE)
+	autotiled.route_end_texture = _generated_texture(Color.WHITE)
 	var no_highlight := VisualTheme.dispatch_style()
 	no_highlight.safe_highlight_enabled = false
 	var themes := {"dispatch": VisualTheme.dispatch_style(), "debug": VisualTheme.debug_shapes(),
-			"asset slots": art, "no highlight": no_highlight}
+			"asset slots": art, "autotile sheet": autotiled, "no highlight": no_highlight}
 	check(art.building_texture(3) != null and VisualTheme.dispatch_style().building_texture(0) == null,
 			"building texture slots should resolve by variant")
+	check(autotiled.building_autotile_texture(0) != null,
+			"building autotile texture slots should resolve by variant")
+	check(autotiled.street_texture != null and autotiled.avenue_texture != null,
+			"road autotile texture slots should be available")
+	check(autotiled.closed_road_texture != null and autotiled.park_texture != null
+			and autotiled.survivor_texture != null and autotiled.safe_zone_texture != null
+			and autotiled.park_grass_texture != null and autotiled.survivor_group_a_texture != null
+			and autotiled.survivor_group_b_texture != null and autotiled.pulse_ring_texture != null
+			and autotiled.select_brackets_texture != null and autotiled.fire_sheet_texture != null
+			and autotiled.smoke_sheet_texture != null
+			and autotiled.route_start_texture != null and autotiled.route_straight_texture != null
+			and autotiled.route_corner_texture != null and autotiled.route_end_texture != null,
+			"map sprite slots should be available")
+	var connected_theme := load("res://assets/art/dispatch_theme.tres") as VisualTheme
+	check(connected_theme != null and connected_theme.street_texture != null
+			and connected_theme.avenue_texture != null and connected_theme.fire_sheet_texture != null
+			and connected_theme.safe_zone_texture != null and connected_theme.park_texture != null
+			and connected_theme.park_grass_texture != null and connected_theme.pulse_ring_texture != null
+			and connected_theme.select_brackets_texture != null
+			and connected_theme.survivor_group_a_texture != null
+			and connected_theme.survivor_group_b_texture != null
+			and connected_theme.smoke_sheet_texture != null and connected_theme.route_start_texture != null
+			and connected_theme.route_straight_texture != null and connected_theme.route_corner_texture != null
+			and connected_theme.route_end_texture != null, "connected art theme should load its textures")
 	var m := MapGenerator.build_from_seed(7, 321)
 	var groups: Array[SurvivorGroup] = []
 	for i in m.survivor_starts.size():
@@ -295,7 +355,6 @@ func test_render_styles() -> void:
 	mv.route = m.find_path(groups[1].tile)
 	mv.route_complete = true
 	check(not m.fires.is_empty() and not m.road_closures.is_empty(), "test map should have fires and closures to draw")
-	mv.alert_tiles.append(m.fires.keys()[0])
 	for name in themes:
 		mv.visual_theme = themes[name]
 		mv._hover = m.buildings[0].cells[0]
@@ -304,8 +363,18 @@ func test_render_styles() -> void:
 		check(mv._shapes.size() == m.buildings.size() and mv._shapes_key[2] == themes[name],
 				"%s: lot shapes not built for this theme" % name)
 		check(mv._drawn_version == m.layout_version, "%s: city layer not drawn" % name)
-	for layer in [mv._city_layer, mv._overlay_layer]:
+	for layer in [mv._city_layer, mv._park_layer, mv._building_layer,
+			mv._smoke_layer, mv._overlay_layer]:
 		check(layer.mouse_filter == Control.MOUSE_FILTER_IGNORE, "draw layers must not take input")
+	check(mv._city_layer.z_index < mv._park_layer.z_index
+			and mv._park_layer.z_index < mv._building_layer.z_index
+			and mv._building_layer.z_index < mv._smoke_layer.z_index
+			and mv._smoke_layer.z_index < mv._route_line.z_index
+			and mv._route_line.z_index < mv._overlay_layer.z_index,
+			"buildings, smoke, route and overlays should render in order")
+	check(mv._building_layer.modulate == UI_COLORS.BUILDING_DIM,
+			"only the building layer should use the dim tint")
+	check(mv._route_line.width == 7.0, "planned route line should stay within the requested width")
 	# Designating a new zone redraws the city with fresh geometry.
 	var extra: CityBuilding = null
 	for b in m.buildings:

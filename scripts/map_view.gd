@@ -10,6 +10,8 @@ extends Control
 ## redrawn every frame on a layer above it. Neither layer takes input.
 ## Touch works through Godot's default "emulate mouse from touch" setting.
 
+const UI_COLORS = preload("res://scripts/ui_colors.gd")
+
 signal tile_pressed(tile: Vector2i)
 signal tile_dragged(tile: Vector2i)
 
@@ -43,10 +45,15 @@ var selected: SurvivorGroup = null
 var route: Array[Vector2i] = []
 var route_bad_index := -1
 var route_complete := false
-## Fire tiles that cut a route; drawn with a pulsing alert ring.
-var alert_tiles: Array[Vector2i] = []
-
+var route_eta_seconds := 0.0
+var alert_countdown := 0.0
+var alert_progress := 0.0
+var alert_icon_texture: Texture2D
 var _time := 0.0
+var _safe_breath := 0.0
+var _waiting_scale := 0.9
+var _ripple_tile := CityMap.NO_TILE
+var _ripple_age := 1.0
 var _hover := CityMap.NO_TILE
 var _flash_tile := CityMap.NO_TILE
 var _flash_left := 0.0
@@ -57,7 +64,11 @@ var _popups: Array[Dictionary] = []
 var _ts := 32.0
 var _origin := Vector2.ZERO
 var _city_layer: Layer
+var _park_layer: Layer
+var _building_layer: Layer
+var _smoke_layer: Layer
 var _overlay_layer: Layer
+var _route_line: Line2D
 var _city_dirty := true
 var _drawn_version := -1
 var _shapes: Array[MapPainter.LotShape] = []  ## per building id, in tile units
@@ -66,18 +77,50 @@ var _shapes_key := []                         ## [map, layout_version, theme] of
 
 func _init() -> void:
 	_city_layer = Layer.new(_draw_city)
+	_park_layer = Layer.new(_draw_parks)
+	_park_layer.name = "ParkLayer"
+	_building_layer = Layer.new(_draw_buildings)
+	_building_layer.name = "BuildingLayer"
+	_smoke_layer = Layer.new(_draw_smoke)
 	_overlay_layer = Layer.new(_draw_overlay)
+	_route_line = Line2D.new()
+	_route_line.name = "PlannedRouteLine"
+	_route_line.width = 7.0
+	_route_line.joint_mode = Line2D.LINE_JOINT_ROUND
+	_route_line.begin_cap_mode = Line2D.LINE_CAP_ROUND
+	_route_line.end_cap_mode = Line2D.LINE_CAP_ROUND
+	_route_line.antialiased = true
+	_route_line.z_index = 4
+	var brightness := UI_COLORS.GLOBAL_BRIGHTNESS
+	modulate = Color(brightness, brightness, brightness, 1.0)
+	_city_layer.z_index = 0
+	_park_layer.z_index = 1
+	_building_layer.modulate = UI_COLORS.BUILDING_DIM
+	_building_layer.z_index = 2
+	_smoke_layer.z_index = 3
+	_overlay_layer.z_index = 5
 	add_child(_city_layer)
+	add_child(_park_layer)
+	add_child(_building_layer)
+	add_child(_smoke_layer)
+	add_child(_route_line)
 	add_child(_overlay_layer)
 
 
 func _ready() -> void:
 	mouse_filter = Control.MOUSE_FILTER_STOP
 	clip_contents = true
+	var glow_tween := create_tween().set_loops()
+	glow_tween.tween_property(self, "_safe_breath", 1.0, 1.0).set_trans(Tween.TRANS_SINE)
+	glow_tween.tween_property(self, "_safe_breath", 0.0, 1.0).set_trans(Tween.TRANS_SINE)
+	var waiting_tween := create_tween().set_loops()
+	waiting_tween.tween_property(self, "_waiting_scale", 1.1, 0.45).set_trans(Tween.TRANS_SINE)
+	waiting_tween.tween_property(self, "_waiting_scale", 0.9, 0.45).set_trans(Tween.TRANS_SINE)
 
 
 func _process(delta: float) -> void:
 	_time += delta
+	_ripple_age += delta
 	_flash_left = maxf(0.0, _flash_left - delta)
 	for i in range(_popups.size() - 1, -1, -1):
 		_popups[i]["age"] += delta
@@ -89,7 +132,11 @@ func _process(delta: float) -> void:
 		_city_dirty = false
 		queue_redraw()
 		_city_layer.queue_redraw()
+		_park_layer.queue_redraw()
+		_building_layer.queue_redraw()
+	_smoke_layer.queue_redraw()
 	_overlay_layer.queue_redraw()
+	_update_route_line()
 
 
 ## Redraws the city layer and rebuilds cached lot geometry. Call after editing
@@ -99,7 +146,7 @@ func refresh() -> void:
 	_city_dirty = true
 
 
-## Red X feedback on a tile the operator cannot use.
+## Alert-color X feedback on a tile the operator cannot use.
 func flash_invalid(tile: Vector2i) -> void:
 	_flash_tile = tile
 	_flash_left = 0.7
@@ -108,13 +155,36 @@ func flash_invalid(tile: Vector2i) -> void:
 ## Drops transient effects when a new round starts.
 func reset_effects() -> void:
 	_popups.clear()
-	alert_tiles.clear()
 	_flash_left = 0.0
 
 
 ## Floating text (points, casualties, alerts) rising from a tile.
 func popup(tile: Vector2i, text: String, color: Color) -> void:
 	_popups.append({"tile": tile, "text": text, "color": color, "age": 0.0})
+
+
+func play_safe_burst(tile: Vector2i, color: Color) -> void:
+	if not UI_COLORS.JUICE_ENABLED:
+		return
+	var particles := CPUParticles2D.new()
+	particles.name = "SafeArrivalBurst"
+	particles.position = tile_center(tile)
+	particles.z_index = 5
+	particles.amount = 18
+	particles.lifetime = 0.45
+	particles.one_shot = true
+	particles.explosiveness = 0.9
+	particles.direction = Vector2.UP
+	particles.spread = 180.0
+	particles.gravity = Vector2.ZERO
+	particles.initial_velocity_min = 18.0
+	particles.initial_velocity_max = 42.0
+	particles.scale_amount_min = 1.5
+	particles.scale_amount_max = 3.0
+	particles.color = color
+	particles.finished.connect(particles.queue_free)
+	add_child(particles)
+	particles.emitting = true
 
 
 # --- Layout helpers -----------------------------------------------------------
@@ -158,11 +228,17 @@ func _gui_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
 		if event.pressed:
 			var t := screen_to_tile(event.position)
+			_hover = t
 			_dragging = true
 			_last_drag_pos = event.position
 			_last_drag_tile = t
 			if map.in_bounds(t):
-				tile_pressed.emit(t)
+				var marker_tile := _marker_tile_at(event.position)
+				var tapped := marker_tile if marker_tile != CityMap.NO_TILE else t
+				if UI_COLORS.JUICE_ENABLED:
+					_ripple_tile = tapped
+					_ripple_age = 0.0
+				tile_pressed.emit(tapped)
 		else:
 			_dragging = false
 		accept_event()
@@ -207,36 +283,77 @@ func _draw_city(ci: CanvasItem) -> void:
 	# A map without a city plan (built by hand, outside MapGenerator) still
 	# shows every tile in the flat style.
 	if visual_theme.style == VisualTheme.Style.DEBUG_SHAPES or map.building_ids.size() != map.tiles.size():
-		_draw_city_flat(ci)
+		_draw_city_flat_base(ci)
 	else:
-		_draw_city_dispatch(ci)
+		_draw_city_dispatch_base(ci)
 
 
-## One flat shape per tile: light roads, dark building squares, green safe tiles.
-func _draw_city_flat(ci: CanvasItem) -> void:
+func _draw_buildings(ci: CanvasItem) -> void:
+	if map == null:
+		return
+	_update_layout()
+	if visual_theme.style == VisualTheme.Style.DEBUG_SHAPES or map.building_ids.size() != map.tiles.size():
+		_draw_buildings_flat(ci)
+	else:
+		_draw_buildings_dispatch(ci)
+
+
+func _draw_parks(ci: CanvasItem) -> void:
+	if map == null:
+		return
+	_update_layout()
+	var th := visual_theme
+	if map.building_ids.size() != map.tiles.size():
+		for y in map.height:
+			for x in map.width:
+				var p := Vector2i(x, y)
+				if map.get_tile(p) == CityMap.Tile.PARK:
+					MapPainter.draw_park_flat(ci, th, tile_rect(p))
+		return
+	_ensure_shapes()
+	var xf := tile_transform()
+	for b in map.buildings:
+		if b.kind == CityBuilding.Kind.PARK:
+			MapPainter.draw_lot(ci, th, b, _shapes[b.id], xf, _ts)
+
+
+func _draw_city_flat_base(ci: CanvasItem) -> void:
 	var th := visual_theme
 	for y in map.height:
 		for x in map.width:
 			var p := Vector2i(x, y)
 			var r := tile_rect(p)
-			match map.get_tile(p):
-				CityMap.Tile.ROAD:
-					MapPainter.draw_road_flat(ci, th, r, _street_marking(p), map.is_intersection(p))
-				CityMap.Tile.BUILDING:
-					MapPainter.draw_building_flat(ci, th, r, (x * 7 + y * 13) % 3)
-				CityMap.Tile.PARK:
-					MapPainter.draw_park_flat(ci, th, r)
-				CityMap.Tile.SAFE:
-					ci.draw_rect(r, th.safe_tile)
+			if map.get_tile(p) == CityMap.Tile.ROAD:
+				MapPainter.draw_road_flat(ci, th, r, _street_marking(p), map.is_intersection(p))
+			elif map.get_tile(p) == CityMap.Tile.SAFE:
+				ci.draw_rect(r, th.safe_tile)
+			else:
+				ci.draw_rect(r, th.block_ground)
+
+
+func _draw_buildings_flat(ci: CanvasItem) -> void:
+	var th := visual_theme
+	if map.building_ids.size() != map.tiles.size():
+		for y in map.height:
+			for x in map.width:
+				var p := Vector2i(x, y)
+				var r := tile_rect(p)
+				match map.get_tile(p):
+					CityMap.Tile.BUILDING:
+						MapPainter.draw_building_flat(ci, th, r, (x * 7 + y * 13) % 3)
+		return
+	_ensure_shapes()
+	var xf := tile_transform()
+	for b in map.buildings:
+		if b.kind != CityBuilding.Kind.PARK:
+			for p in b.cells:
+				MapPainter.draw_building_flat(ci, th, tile_rect(p), b.variant)
 	if th.show_lot_debug and not map.buildings.is_empty():
-		_ensure_shapes()
-		var xf := tile_transform()
 		for b in map.buildings:
 			MapPainter.draw_lot_debug(ci, th, _shapes[b.id], xf)
 
 
-## Dispatch map: block ground, curbed roads, then outlined lots on top.
-func _draw_city_dispatch(ci: CanvasItem) -> void:
+func _draw_city_dispatch_base(ci: CanvasItem) -> void:
 	var th := visual_theme
 	for y in map.height:
 		for x in map.width:
@@ -250,15 +367,53 @@ func _draw_city_dispatch(ci: CanvasItem) -> void:
 					seams |= MapPainter.SEAM_RIGHT
 				if _lane_seam(p, Vector2i(0, 1)):
 					seams |= MapPainter.SEAM_DOWN
-				MapPainter.draw_road(ci, th, r, cls, _curb_sides(p), marking, seams)
+				var connections := _sides_where(p, func(q: Vector2i) -> bool: return map.get_tile(q) == CityMap.Tile.ROAD)
+				MapPainter.draw_road(ci, th, r, cls, _curb_sides(p), marking, seams, connections)
 			elif map.is_road_closure(p):
 				MapPainter.draw_closed_road(ci, th, r, _sides_where(p, func(q: Vector2i) -> bool: return map.get_tile(q) == CityMap.Tile.ROAD), _curb_sides(p))
 			else:
 				ci.draw_rect(r, th.block_ground)
+
+
+func _draw_buildings_dispatch(ci: CanvasItem) -> void:
+	var th := visual_theme
 	_ensure_shapes()
 	var xf := tile_transform()
 	for b in map.buildings:
-		MapPainter.draw_lot(ci, th, b, _shapes[b.id], xf, _ts)
+		if b.kind != CityBuilding.Kind.PARK:
+			MapPainter.draw_lot(ci, th, b, _shapes[b.id], xf, _ts)
+
+
+func _update_route_line() -> void:
+	if map == null or selected == null or route.size() < 2:
+		_route_line.clear_points()
+		_route_line.visible = false
+		return
+	_update_layout()
+	var points := PackedVector2Array()
+	for p in route:
+		points.append(tile_center(p))
+	_route_line.points = points
+	_route_line.default_color = _team_color(selected)
+	_route_line.visible = true
+
+
+func _team_color(group: SurvivorGroup) -> Color:
+	return UI_COLORS.TEAM_A_COLOR if group.label == "A" else UI_COLORS.TEAM_B_COLOR
+
+
+func _marker_tile_at(pointer: Vector2) -> Vector2i:
+	var nearest := CityMap.NO_TILE
+	var nearest_distance := _ts * 0.72
+	for group in groups:
+		if not group.can_plan():
+			continue
+		var center := grid_to_screen(group.draw_position())
+		var distance := pointer.distance_to(center)
+		if distance <= nearest_distance:
+			nearest = group.tile
+			nearest_distance = distance
+	return nearest
 
 
 ## Rebuilds lot geometry when the map, its layout or the theme changed.
@@ -322,6 +477,18 @@ func _road_neighbors(p: Vector2i) -> int:
 
 # --- Overlay layer ----------------------------------------------------------------
 
+func _draw_smoke(ci: CanvasItem) -> void:
+	if map == null:
+		return
+	_update_layout()
+	var th := visual_theme
+	for y in map.height:
+		for x in map.width:
+			var p := Vector2i(x, y)
+			if map.get_tile(p) == CityMap.Tile.ROAD and map.is_smoke(p):
+				MapPainter.draw_smoke(ci, th, tile_rect(p), _time)
+
+
 func _draw_overlay(ci: CanvasItem) -> void:
 	if map == null:
 		return
@@ -332,42 +499,58 @@ func _draw_overlay(ci: CanvasItem) -> void:
 
 	# 1. Safe-zone highlight on every designated building.
 	if th.safe_highlight_enabled:
-		_draw_safe_zones(ci, font, pulse)
+		_draw_safe_zones(ci, font, _safe_breath)
 
-	# 2. Hazards: smoke (hatched amber) then fire (red with X and flame).
-	for y in map.height:
-		for x in map.width:
-			var p := Vector2i(x, y)
-			if map.is_smoke(p):
-				MapPainter.draw_smoke(ci, th, tile_rect(p))
+	# 2. Walkable roads brighten subtly in the selected team's color.
+	if selected != null:
+		var team_color := _team_color(selected)
+		for y in map.height:
+			for x in map.width:
+				var p := Vector2i(x, y)
+				if map.is_passable(p):
+					ci.draw_rect(tile_rect(p).grow(-1.0), Color(team_color, 0.10))
+
+	# 3. Animated fire sprites and faint danger-radius rings; smoke is lower.
 	for f in map.fires:
+		var fire_center := tile_center(f)
+		var fire_pulse := 0.5 + 0.5 * sin(_time * 2.8 + float(f.x + f.y))
+		ci.draw_arc(fire_center, _ts * 1.35, 0.0, TAU, 32,
+				Color(UI_COLORS.DANGER, 0.08 + fire_pulse * 0.08), 1.0, true)
+		ci.draw_circle(fire_center, _ts * 0.48, Color(UI_COLORS.DANGER, 0.04 + fire_pulse * 0.04))
 		MapPainter.draw_fire(ci, th, tile_rect(f), _time)
-	for a in alert_tiles:
-		if map.is_fire(a):
-			ci.draw_arc(tile_center(a), _ts * (0.75 + 0.25 * pulse), 0, TAU, 28, Color(th.alert, 0.9), 3.0, true)
+		_draw_threat_ring(ci, tile_center(f), _ts * 0.72, th.alert)
+	_draw_alert_countdown(ci, font)
 
-	# 3. Paths of groups already en route (dashed), and blocked segments (red).
+	# 4. Paths of groups already en route (dashed), and blocked segments.
 	for g in groups:
 		if g.state == SurvivorGroup.State.MOVING:
 			var from := grid_to_screen(g.draw_position())
 			for i in range(g.index + 1, g.path.size()):
 				var to := tile_center(g.path[i])
-				var col := th.alert if g.halt_requested else th.en_route
+				var col: Color = th.alert if g.halt_requested else th.en_route
 				ci.draw_dashed_line(from, to, col, maxf(2.0, _ts * 0.09), _ts * 0.22, true)
 				from = to
 		elif g.state == SurvivorGroup.State.BLOCKED and g.blocking_tile != CityMap.NO_TILE:
 			_draw_blocked_segment(ci, g, pulse)
 
-	# 4. The operator's planned route.
+	# 5. The operator's planned route.
 	if selected != null and not route.is_empty():
-		_draw_planned_route(ci, pulse)
+		_draw_planned_route(ci, pulse, font)
+	if UI_COLORS.JUICE_ENABLED and _ripple_age < 0.42 and map.in_bounds(_ripple_tile):
+		var ripple_ratio := _ripple_age / 0.42
+		ci.draw_arc(tile_center(_ripple_tile), _ts * (0.15 + ripple_ratio * 0.75),
+				0.0, TAU, 28, Color(UI_COLORS.ACCENT_TEAL, 1.0 - ripple_ratio), 1.8, true)
 
-	# 5. Hover and invalid-tap feedback. Hovering a building outlines all of it.
+	# 6. Hover and invalid-tap feedback. Hovering a building outlines all of it.
 	if map.in_bounds(_hover):
 		var hb: CityBuilding = map.building_at(_hover) if th.style == VisualTheme.Style.DISPATCH_STYLE else null
 		if hb != null:
 			_ensure_shapes()
 			MapPainter.draw_lot_hover(ci, th, tile_transform() * _shapes[hb.id].outline)
+		elif th.select_brackets_texture != null:
+			var center := tile_rect(_hover).get_center()
+			var brackets_rect := Rect2(center - Vector2.ONE * (_ts * 0.5), Vector2.ONE * _ts)
+			ci.draw_texture_rect(th.select_brackets_texture, brackets_rect, false, th.hover)
 		else:
 			ci.draw_rect(tile_rect(_hover).grow(-1.0), th.hover, false, 2.0)
 	if _flash_left > 0.0 and map.in_bounds(_flash_tile):
@@ -377,22 +560,29 @@ func _draw_overlay(ci: CanvasItem) -> void:
 		ci.draw_line(fr.position, fr.end, fc, 3.0, true)
 		ci.draw_line(Vector2(fr.end.x, fr.position.y), Vector2(fr.position.x, fr.end.y), fc, 3.0, true)
 
-	# 6. Survivor groups.
+	# 7. Survivor groups.
 	for g in groups:
 		if not g.is_active():
 			continue
 		var c := grid_to_screen(g.draw_position())
-		var rad := _ts * th.survivor_radius_ratio
+		var rad := _ts * 0.54 * (_waiting_scale if g.state == SurvivorGroup.State.WAITING else 1.0)
 		if g == selected:
-			ci.draw_arc(c, rad + 5.0 + 3.0 * pulse, 0, TAU, 32, th.select_ring, 3.0, true)
+			ci.draw_arc(c, rad + 4.0, 0, TAU, 32, _team_color(g), 2.5, true)
+			if th.pulse_ring_texture != null:
+				var frame := posmod(floori(_time * 8.0), 6)
+				var ring_rect := Rect2(c - Vector2.ONE * (_ts * 0.5), Vector2.ONE * _ts)
+				ci.draw_texture_rect_region(th.pulse_ring_texture, ring_rect, Rect2(frame * 96, 0, 96, 96), _team_color(g))
+			else:
+				ci.draw_arc(c, rad + 5.0 + 3.0 * pulse, 0, TAU, 32, _team_color(g), 3.0, true)
 		elif g.state == SurvivorGroup.State.BLOCKED:
 			ci.draw_arc(c, rad + 5.0 + 4.0 * pulse, 0, TAU, 32, th.alert, 3.0, true)
 		elif g.state == SurvivorGroup.State.WAITING:
 			ci.draw_arc(c, rad + 3.0 + 2.0 * pulse, 0, TAU, 32, th.waiting_ring, 1.5, true)
-		var fill := th.survivor_blocked if g.state == SurvivorGroup.State.BLOCKED else th.survivor
-		MapPainter.draw_survivor(ci, th, font, c, rad, g.label, g.survivors, fill)
+		var fill: Color = th.survivor_blocked if g.state == SurvivorGroup.State.BLOCKED else th.survivor
+		MapPainter.draw_survivor(ci, th, font, c, rad, g.label, g.survivors, fill,
+				selected != null and g != selected)
 
-	# 7. Floating popups.
+	# 8. Floating popups.
 	for pp in _popups:
 		var age: float = pp["age"]
 		var alpha := clampf(1.0 - age / POPUP_LIFETIME, 0.0, 1.0)
@@ -403,8 +593,17 @@ func _draw_overlay(ci: CanvasItem) -> void:
 		ci.draw_string_outline(font, pos - Vector2(w * 0.5, 0), pp["text"], HORIZONTAL_ALIGNMENT_LEFT, -1, fs, 4, Color(th.outline, alpha))
 		ci.draw_string(font, pos - Vector2(w * 0.5, 0), pp["text"], HORIZONTAL_ALIGNMENT_LEFT, -1, fs, Color(col, alpha))
 
-	# 8. Map frame.
+	# 9. Map frame.
 	ci.draw_rect(Rect2(_origin, Vector2(map.width, map.height) * _ts), th.map_frame, false, 1.0)
+
+
+func _draw_threat_ring(ci: CanvasItem, center: Vector2, radius: float, color: Color) -> void:
+	const SEGMENTS := 8
+	var segment_angle := TAU / SEGMENTS
+	for i in SEGMENTS:
+		var start := i * segment_angle + segment_angle * 0.16
+		var end := (i + 1) * segment_angle - segment_angle * 0.16
+		ci.draw_arc(center, radius, start, end, 5, color, 1.5, true)
 
 
 ## Highlights every building designated SAFE_ZONE. It brightens while a route
@@ -455,21 +654,45 @@ func _draw_blocked_segment(ci: CanvasItem, g: SurvivorGroup, pulse: float) -> vo
 			break
 
 
-func _draw_planned_route(ci: CanvasItem, pulse: float) -> void:
+func _draw_planned_route(ci: CanvasItem, pulse: float, font: Font) -> void:
 	var th := visual_theme
-	var pts := PackedVector2Array()
-	for p in route:
-		pts.append(tile_center(p))
-	var width := maxf(3.0, _ts * th.route_width_ratio)
-	var good := route.size() if route_bad_index < 0 else route_bad_index
-	if pts.size() >= 2:
-		ci.draw_polyline(pts, th.outline, width + 4.0, true)
-		if good >= 2:
-			ci.draw_polyline(pts.slice(0, good), th.route, width, true)
-		if route_bad_index >= 0:
-			ci.draw_polyline(pts.slice(maxi(good - 1, 0)), th.route_bad, width, true)
-	for i in range(1, pts.size()):
-		ci.draw_circle(pts[i], width * 0.32, th.outline)
+	for i in route.size():
+		var p := route[i]
+		var texture: Texture2D
+		var angle := 0.0
+		if i == 0:
+			texture = th.route_start_texture
+		elif i == route.size() - 1:
+			texture = th.route_end_texture
+			angle = Vector2(route[i] - route[i - 1]).angle()
+		else:
+			var incoming := route[i - 1] - p
+			var outgoing := route[i + 1] - p
+			if incoming + outgoing == Vector2i.ZERO:
+				texture = th.route_straight_texture
+				angle = 0.0 if incoming.x != 0 else PI * 0.5
+			else:
+				texture = th.route_corner_texture
+				angle = _route_corner_angle(incoming, outgoing)
+		if texture != null:
+			var tint: Color = th.route_bad if route_bad_index >= 0 and i >= route_bad_index else _team_color(selected)
+			_draw_route_sprite(ci, texture, tile_center(p), angle, tint)
+		else:
+			var previous := route[i - 1] if i > 0 else CityMap.NO_TILE
+			var next := route[i + 1] if i + 1 < route.size() else CityMap.NO_TILE
+			if previous != CityMap.NO_TILE:
+				ci.draw_line(tile_center(previous), tile_center(p), th.route, 2.0, true)
+			if next != CityMap.NO_TILE:
+				ci.draw_line(tile_center(p), tile_center(next), th.route, 2.0, true)
+	_draw_route_arrow(ci)
+	if not route_complete and map.in_bounds(_hover) and _hover != route[-1]:
+		var preview_color: Color = _team_color(selected) if map.is_passable(_hover) else UI_COLORS.DANGER
+		ci.draw_dashed_line(tile_center(route[-1]), tile_center(_hover),
+				Color(preview_color, 0.7), 3.0, 7.0, true)
+	var eta_text := "~%.1fs plan" % route_eta_seconds
+	var eta_position := tile_center(route[-1]) + Vector2(6.0, -_ts * 0.55)
+	ci.draw_string_outline(font, eta_position, eta_text, HORIZONTAL_ALIGNMENT_LEFT, -1, 14, 3, th.outline)
+	ci.draw_string(font, eta_position, eta_text, HORIZONTAL_ALIGNMENT_LEFT, -1, 14, _team_color(selected))
 	if route_bad_index >= 0 and route_bad_index < route.size():
 		var br := tile_rect(route[route_bad_index]).grow(-_ts * 0.15)
 		ci.draw_line(br.position, br.end, th.route_bad, 3.0, true)
@@ -477,10 +700,6 @@ func _draw_planned_route(ci: CanvasItem, pulse: float) -> void:
 		return
 	var last := route[-1]
 	if route_complete:
-		var c := tile_center(last)
-		ci.draw_circle(c, _ts * 0.3, th.outline)
-		ci.draw_circle(c, _ts * 0.24, th.safe_outline)
-		ci.draw_polyline(PackedVector2Array([c + Vector2(-_ts * 0.11, 0), c + Vector2(-_ts * 0.02, _ts * 0.09), c + Vector2(_ts * 0.13, -_ts * 0.09)]), th.outline, 2.5, true)
 		return
 	# Route still open: outline the tiles it can extend into next.
 	for d in CityMap.DIRS:
@@ -490,4 +709,56 @@ func _draw_planned_route(ci: CanvasItem, pulse: float) -> void:
 			if map.is_smoke(n):
 				col = Color(th.next_step_smoke, 0.45 + 0.45 * pulse)
 			ci.draw_rect(tile_rect(n).grow(-2.0), col, false, 2.0)
-	ci.draw_arc(tile_center(last), _ts * 0.3, 0, TAU, 24, th.route, 2.5, true)
+
+
+func _draw_route_arrow(ci: CanvasItem) -> void:
+	if route.size() < 2:
+		return
+	var distance := fposmod(_time * 0.8, float(route.size() - 1))
+	var index := mini(floori(distance), route.size() - 2)
+	var amount := distance - float(index)
+	var from := tile_center(route[index])
+	var to := tile_center(route[index + 1])
+	var center := from.lerp(to, amount)
+	var direction := (to - from).normalized()
+	var side := Vector2(-direction.y, direction.x)
+	var tip := center + direction * (_ts * 0.18)
+	var base := center - direction * (_ts * 0.13)
+	ci.draw_colored_polygon(PackedVector2Array([
+		tip,
+		base + side * (_ts * 0.15),
+		base - side * (_ts * 0.15),
+	]), _team_color(selected))
+
+
+func _draw_alert_countdown(ci: CanvasItem, font: Font) -> void:
+	if alert_countdown <= 0.0 or alert_icon_texture == null:
+		return
+	var center := Vector2(_origin.x + map.width * _ts - 30.0, _origin.y + 28.0)
+	ci.draw_arc(center, 16.0, -PI * 0.5, -PI * 0.5 + TAU * alert_progress,
+			28, UI_COLORS.WARNING, 2.0, true)
+	ci.draw_texture_rect(alert_icon_texture, Rect2(center - Vector2.ONE * 11.0,
+			Vector2.ONE * 22.0), false, UI_COLORS.WARNING)
+	var text := "%.1fs" % alert_countdown
+	ci.draw_string_outline(font, center + Vector2(-18.0, 30.0), text,
+			HORIZONTAL_ALIGNMENT_CENTER, 54.0, 14, 2, UI_COLORS.BG_DARK)
+	ci.draw_string(font, center + Vector2(-18.0, 30.0), text,
+			HORIZONTAL_ALIGNMENT_CENTER, 54.0, 14, UI_COLORS.WARNING)
+
+
+func _route_corner_angle(incoming: Vector2i, outgoing: Vector2i) -> float:
+	for turn in 4:
+		var angle := turn * PI * 0.5
+		var left := Vector2.LEFT.rotated(angle).round()
+		var down := Vector2.DOWN.rotated(angle).round()
+		if (left == Vector2(incoming) and down == Vector2(outgoing)) \
+				or (left == Vector2(outgoing) and down == Vector2(incoming)):
+			return angle
+	return 0.0
+
+
+func _draw_route_sprite(ci: CanvasItem, texture: Texture2D, center: Vector2, angle: float, tint: Color) -> void:
+	var scale := _ts / float(texture.get_width())
+	ci.draw_set_transform(center, angle, Vector2.ONE * scale)
+	ci.draw_texture(texture, -Vector2(texture.get_size()) * 0.5, tint)
+	ci.draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)

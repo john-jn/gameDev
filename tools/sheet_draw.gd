@@ -1,11 +1,12 @@
 extends RefCounted
 ## Drawing helpers shared by make_building_sheet.gd: building and road autotile pieces.
 
-const FILL := Color("1a4146")
-const RIM := Color(0.38, 0.9, 0.82, 0.9)
-const ROAD := Color("0b1a1f")
-const DASH := Color(0.55, 0.65, 0.7, 0.8)
-const TICK := Color("ffb020")
+const PALETTE := preload("res://scripts/ui_palette.gd")
+const FILL := PALETTE.TEAL
+const RIM := Color(PALETTE.MINT, 0.9)
+const ROAD := PALETTE.BG_DARK
+const DASH := Color(PALETTE.TEAL_MID, 0.8)
+const TICK := PALETTE.MINT
 const N := 1
 const E := 2
 const S := 4
@@ -115,6 +116,4 @@ static func lot(ci: CanvasItem, cells: Array, origin: Vector2, ts: float, ticks:
 		var r := Rect2(origin + Vector2(c) * ts, Vector2(ts, ts))
 		piece(ci, r, mask, notch, ticks)
 		var lbl := str(mask) + ("+IC" if notch != 0 else "")
-		ci.draw_string(f, r.position + Vector2(5, 15), lbl, HORIZONTAL_ALIGNMENT_LEFT, -1, 13, Color(1, 1, 1, 0.85))
-
-
+		ci.draw_string(f, r.position + Vector2(5, 15), lbl, HORIZONTAL_ALIGNMENT_LEFT, -1, 13, Color(PALETTE.WHITE, 0.85))

@@ -11,37 +11,55 @@ extends Control
 ## The map's look is one VisualTheme, picked here (see `visual_style`) and
 ## handed to MapView and the legend; nothing else depends on it.
 
-const COL_BG := Color("0a0f1a")
-const COL_BEZEL := Color("12161d")
-const COL_BEZEL_EDGE := Color("6a7588")
-const COL_PANEL := Color("141c2b")
-const COL_PANEL_EDGE := Color("3a475c")
-const COL_MODULE := Color("1a2230")
-const COL_MODULE_EDGE := Color("46546b")
-const COL_TEXT := Color("d7e1f0")
-const COL_DIM := Color("7f8ea8")
-const COL_ACCENT := Color("38c6f4")
-const COL_ALERT := Color("ff4d3d")
-const COL_OK := Color("39d98a")
-const COL_WARN := Color("ffb020")
+const UI_COLORS = preload("res://scripts/ui_colors.gd")
+
+var COL_PANEL := UI_COLORS.BG_PANEL
+var COL_PANEL_EDGE := UI_COLORS.TEAL
+var COL_MODULE := UI_COLORS.BG_PANEL
+var COL_MODULE_EDGE := UI_COLORS.TEAL
+var COL_TEXT := UI_COLORS.TEXT_PRIMARY
+var COL_DIM := UI_COLORS.TEXT_SECONDARY
+var COL_ACCENT := UI_COLORS.ACCENT_TEAL
+var COL_ALERT := UI_COLORS.DANGER
+var COL_OK := UI_COLORS.SUCCESS
+var COL_WARN := UI_COLORS.WARNING
 const LOG_LINES := 6
 const LOG_SHOWN := 3
 const MAX_STRIKES := 6
 const DIFFICULTY_NAMES := ["Training", "Easy", "Moderate", "Hard", "Severe", "Extreme"]
+const BUTTONS_SHEET := preload("res://assets/art/buttons_sheet.png")
+const LOGO_TEXTURE := preload("res://ui/logo_header_1x.png")
+const STAR_SHEET := preload("res://assets/art/star_icons_sheet.png")
+const ALERT_TEXTURE := preload("res://assets/art/alert_icon.png")
+const TABLET_FRAME_TEXTURE := preload("res://ui/tablet_frame_slim.png")
+const GROUP_A_TEXTURE := preload("res://ui/group_a_light.png")
+const GROUP_B_TEXTURE := preload("res://ui/group_b_light.png")
+const PEOPLE_LOST_EMPTY_TEXTURE := preload("res://ui/people_lost_empty.png")
+const PEOPLE_LOST_FILLED_TEXTURE := preload("res://ui/people_lost_filled.png")
+const UI_THEME := preload("res://ui_theme.tres")
+const SCANLINE_SHADER := preload("res://ui/scanline_overlay.gdshader")
+const ALERT_FLASH_SHADER := preload("res://ui/alert_flash.gdshader")
 
 
 ## Small legend icon that reuses the map's own symbol painters.
 class Swatch extends Control:
+	const LEGEND_SHEET := preload("res://assets/art/legend_icons_sheet.png")
+
 	var kind := ""
 	var visual_theme: VisualTheme
 
 	func _init(p_kind: String, p_theme: VisualTheme) -> void:
 		kind = p_kind
 		visual_theme = p_theme
-		custom_minimum_size = Vector2(20, 20)
+		custom_minimum_size = Vector2(32, 32)
 		mouse_filter = Control.MOUSE_FILTER_IGNORE
 
 	func _draw() -> void:
+		var sprite_index: int = {"fire": 0, "smoke": 1, "road": 2, "survivor": 3}.get(kind, -1)
+		if sprite_index >= 0:
+			draw_texture_rect_region(LEGEND_SHEET, Rect2(Vector2.ZERO, size),
+					Rect2(sprite_index * 32, 0, 32, 32), UiPalette.CYAN)
+			return
 		MapPainter.draw_legend_symbol(self, visual_theme, kind, Rect2(Vector2.ZERO, size), get_theme_default_font())
 
 
@@ -79,19 +97,21 @@ var lbl_plan: Label
 var lbl_score: Label
 var lbl_route: Label
 var lbl_hint: Label
-var lbl_log: Label
+var lbl_log: RichTextLabel
 var group_box: VBoxContainer
-var group_leds: Array[UiWidgets.Led] = []
+var group_icons: Array[TextureRect] = []
 var group_btns: Array[Button] = []
 var route_led: UiWidgets.Led
-var strike_leds: Array[UiWidgets.Led] = []
+var strike_icons: Array[TextureRect] = []
 var help_box: VBoxContainer
-var alert_led: UiWidgets.Led
+var alert_led: TextureRect
 var btn_dispatch: Button
 var btn_undo: Button
 var btn_clear: Button
 var alert_panel: PanelContainer
 var lbl_alert: Label
+var hint_panel: PanelContainer
+var _juice_flash: ColorRect
 var result_panel: PanelContainer
 var lbl_result_title: Label
 var lbl_result_sub: Label
@@ -99,11 +119,17 @@ var lbl_result_saved: Label
 var lbl_result_total: Label
 var result_banner: PanelContainer
 var result_led: UiWidgets.Led
-var result_stars: Array[UiWidgets.Led] = []
+var result_stars: Array[TextureRect] = []
 var result_pips: HFlowContainer
 var result_grid: GridContainer
 var lbl_result_note: Label
 var btn_next: Button
+var first_successful_dispatch := false
+var _styled_selected: SurvivorGroup
+var lbl_score_popup: Label
+var _score_target := 0
+var _animated_score := 0.0
+var _score_tween: Tween
 
 
 func _ready() -> void:
@@ -145,7 +171,7 @@ func _start_round() -> void:
 		round_num, _difficulty_name(), groups.size(), map.fires.size(), hazards.events_remaining])
 	# MapGenerator.build_from_seed(round, seed) rebuilds this exact map.
 	print("Evac Grid round %d map: %s" % [round_num, map.gen_info])
-	_notify("Tap a yellow survivor group to start planning. The plan clock is running!", COL_ACCENT)
+	_notify("Tap a green survivor marker to start planning. The plan clock is running!", COL_ACCENT)
 	_update_ui()
 
 
@@ -176,10 +202,15 @@ func _on_group_event(g: SurvivorGroup, ev: Dictionary) -> void:
 		"casualty":
 			var pts := scorer.record_casualty()
 			map_view.popup(tile, "-1 survivor (%d)" % pts, COL_ALERT)
+			_show_score_popup(pts)
+			_play_loss_feedback(scorer.lost - 1)
 			_log("Group %s lost a survivor in smoke (%d)." % [g.label, pts])
 		"delivered":
 			var res := scorer.record_delivery(g)
-			map_view.popup(tile, "+%d" % (res["rescue"] + res["efficiency"]), COL_OK)
+			var points: int = int(res["rescue"]) + int(res["efficiency"])
+			map_view.popup(tile, "+%d" % points, COL_OK)
+			map_view.play_safe_burst(tile, UI_COLORS.SUCCESS)
+			_show_score_popup(points)
 			_log("Group %s SAFE: %d survivors (+%d), efficiency %d%% (+%d)." % [
 				g.label, g.survivors, res["rescue"], roundi(res["ratio"] * 100.0), res["efficiency"]])
 		"lost":
@@ -187,8 +218,8 @@ func _on_group_event(g: SurvivorGroup, ev: Dictionary) -> void:
 
 
 func _on_hazard(fire: Vector2i) -> void:
-	map_view.alert_tiles.append(fire)
 	map_view.popup(fire, "FIRE!", COL_ALERT)
+	_trigger_juice_alert()
 	var hit: Array[String] = []
 	for g in groups:
 		if g.remaining_contains(fire):
@@ -244,7 +275,7 @@ func _on_tile_pressed(p: Vector2i) -> void:
 			_notify("Group %s is already en route." % mover.label, COL_DIM)
 		else:
 			map_view.flash_invalid(p)
-			_notify("Select a survivor group first (yellow circles).", COL_WARN)
+			_notify("Select a survivor group first (green markers).", COL_WARN)
 		return
 	var idx := route.find(p)
 	if idx != -1:
@@ -324,11 +355,14 @@ func _dispatch() -> void:
 	var secs := round_time - (selected.blocked_since if is_reroute else plan_clock_start)
 	var shortest := map.shortest_length(selected.tile)
 	var pts := scorer.record_dispatch(selected, secs, is_reroute, route.size() - 1, shortest)
+	_show_score_popup(pts)
 	var kind := "Detour" if is_reroute else "Route"
 	_log("%s for Group %s: %d tiles (shortest %d), %.1fs -> +%d %s." % [
 		kind, selected.label, route.size() - 1, shortest, secs, pts, "response" if is_reroute else "planning"])
 	map_view.popup(selected.tile, "+%d" % pts, COL_ACCENT)
 	selected.dispatch(route)
+	first_successful_dispatch = true
+	hint_panel.visible = false
 	plan_clock_start = round_time
 	selected = null
 	route.clear()
@@ -431,42 +465,33 @@ func _state_text(g: SurvivorGroup) -> String:
 	return ""
 
 
-func _group_led_color(g: SurvivorGroup) -> Color:
-	if g == selected:
-		return COL_ACCENT
-	match g.state:
-		SurvivorGroup.State.WAITING:
-			return COL_WARN
-		SurvivorGroup.State.MOVING:
-			return Color("5b8cff")
-		SurvivorGroup.State.BLOCKED:
-			return COL_ALERT
-		SurvivorGroup.State.DELIVERED:
-			return COL_OK
-	return COL_DIM
-
-
-## One LED + select button per group; rebuilt each round (the group count changes).
+## One team icon + select button per group; rebuilt each round.
 func _build_group_rows() -> void:
 	for c in group_box.get_children():
 		group_box.remove_child(c)
 		c.queue_free()
-	group_leds.clear()
+	group_icons.clear()
 	group_btns.clear()
 	for g in groups:
 		var row := HBoxContainer.new()
 		row.add_theme_constant_override("separation", 8)
-		var led := UiWidgets.Led.new(18.0)
-		led.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-		row.add_child(led)
-		var b := _button("", Color("232d40"), _on_group_row_pressed.bind(g))
+		var icon := TextureRect.new()
+		icon.texture = GROUP_A_TEXTURE if g.label == "A" else GROUP_B_TEXTURE
+		icon.custom_minimum_size = Vector2(24, 24)
+		icon.expand_mode = TextureRect.EXPAND_KEEP_SIZE
+		icon.stretch_mode = TextureRect.STRETCH_KEEP
+		icon.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		row.add_child(icon)
+		var b := _button("", _on_group_row_pressed.bind(g))
 		b.alignment = HORIZONTAL_ALIGNMENT_LEFT
 		b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		b.add_theme_font_size_override("font_size", 14)
 		row.add_child(b)
 		group_box.add_child(row)
-		group_leds.append(led)
+		group_icons.append(icon)
 		group_btns.append(b)
+	_apply_team_button_styles()
 
 
 func _on_group_row_pressed(g: SurvivorGroup) -> void:
@@ -478,11 +503,107 @@ func _log(text: String) -> void:
 	log_lines.append("[%s] %s" % [_fmt_time(round_time), text])
 	while log_lines.size() > LOG_LINES:
 		log_lines.remove_at(0)
+	_refresh_ops_log()
+
+
+func _refresh_ops_log() -> void:
+	if lbl_log == null:
+		return
+	lbl_log.clear()
+	var shown := log_lines.slice(maxi(0, log_lines.size() - LOG_SHOWN))
+	for i in shown.size():
+		var line: String = shown[i]
+		var color := UI_COLORS.TEXT_SECONDARY
+		if line.contains("ALERT") or line.contains("lost") or line.contains("FIRE"):
+			color = UI_COLORS.DANGER
+		elif line.contains("halted") or line.contains("smoke") or line.contains("blocked"):
+			color = UI_COLORS.WARNING
+		var age := float(i + 1) / float(maxi(shown.size(), 1))
+		var color_code := Color(color, lerpf(0.42, 1.0, age)).to_html(true)
+		var escaped_line := line.replace("[", "[lb]").replace("]", "[rb]")
+		lbl_log.append_text("[color=#%s]%s[/color]\n" % [color_code, escaped_line])
+
+
+func _play_loss_feedback(index: int) -> void:
+	if index < 0 or index >= strike_icons.size():
+		return
+	var icon := strike_icons[index]
+	icon.pivot_offset = icon.size * 0.5
+	var tween := create_tween()
+	tween.tween_property(icon, "rotation", -0.12, 0.06)
+	tween.tween_property(icon, "rotation", 0.12, 0.06)
+	tween.tween_property(icon, "rotation", -0.08, 0.05)
+	tween.tween_property(icon, "rotation", 0.0, 0.06)
+	_trigger_juice_alert()
+
+
+func _trigger_juice_alert() -> void:
+	if not UI_COLORS.JUICE_ENABLED or _juice_flash == null:
+		return
+	_juice_flash.visible = true
+	var material := _juice_flash.material as ShaderMaterial
+	material.set_shader_parameter("intensity", 0.16)
+	var flash_tween := create_tween()
+	flash_tween.tween_method(
+			func(value: float) -> void: material.set_shader_parameter("intensity", value),
+			0.16, 0.0, 0.3)
+	flash_tween.finished.connect(func() -> void: _juice_flash.visible = false)
+	var rest := map_view.position
+	var shake := create_tween()
+	shake.tween_property(map_view, "position", rest + Vector2(3.0, 0.0), 0.025)
+	shake.tween_property(map_view, "position", rest - Vector2(3.0, 0.0), 0.04)
+	shake.tween_property(map_view, "position", rest, 0.05)
+
+
+func _set_animated_score(value: float) -> void:
+	_animated_score = value
+	lbl_score.text = "%d" % roundi(value)
+
+
+func _show_score_popup(points: int) -> void:
+	if points == 0 or lbl_score_popup == null:
+		return
+	lbl_score_popup.text = "%+d" % points
+	lbl_score_popup.add_theme_color_override("font_color",
+			UI_COLORS.SUCCESS if points > 0 else UI_COLORS.DANGER)
+	lbl_score_popup.modulate.a = 1.0
+	lbl_score_popup.scale = Vector2.ONE * 0.8
+	var tween := create_tween()
+	tween.set_parallel(true)
+	tween.tween_property(lbl_score_popup, "scale", Vector2.ONE, 0.18)
+	tween.tween_property(lbl_score_popup, "modulate:a", 0.0, 0.8).set_delay(0.25)
+
+
+func _team_color_for_group(group: SurvivorGroup) -> Color:
+	return UI_COLORS.TEAM_A_COLOR if group.label == "A" else UI_COLORS.TEAM_B_COLOR
+
+
+func _apply_team_button_styles() -> void:
+	for i in group_btns.size():
+		var button := group_btns[i]
+		var group := groups[i]
+		var color := UI_COLORS.TEAM_A_COLOR if group.label == "A" else UI_COLORS.TEAM_B_COLOR
+		var is_selected := group == selected
+		button.modulate = Color.WHITE if is_selected else Color(UI_COLORS.WHITE, 0.72)
+		group_icons[i].modulate = Color(color, 1.0 if is_selected else 0.72)
+		var normal := _flat_button_style(
+				Color(color, 0.16) if is_selected else UI_COLORS.BG_PANEL,
+				color if is_selected else UI_COLORS.TEAL_MID,
+				2 if is_selected else 1)
+		var hover := _flat_button_style(Color(color, 0.25), color, 2)
+		var pressed := _flat_button_style(Color(color, 0.32), color, 2)
+		var disabled := _flat_button_style(UI_COLORS.BG_PANEL, UI_COLORS.TEAL, 1)
+		button.add_theme_stylebox_override("normal", normal)
+		button.add_theme_stylebox_override("hover", hover)
+		button.add_theme_stylebox_override("pressed", pressed)
+		button.add_theme_stylebox_override("disabled", disabled)
+	_styled_selected = selected
 
 
 func _notify(text: String, color: Color) -> void:
 	lbl_hint.text = text
 	lbl_hint.add_theme_color_override("font_color", color)
+	hint_panel.visible = not first_successful_dispatch
 
 
 func _fmt_time(s: float) -> String:
@@ -500,7 +621,7 @@ func set_visual_style(s: VisualTheme.Style) -> void:
 	else:
 		visual_theme = VisualTheme.for_style(s)
 	map_view.visual_theme = visual_theme
-	map_frame.add_theme_stylebox_override("panel", _style(visual_theme.map_bg, COL_PANEL_EDGE, 8, 1, 4))
+	map_frame.add_theme_stylebox_override("panel", _style(COL_PANEL, COL_PANEL_EDGE, 8, 1, 4))
 	for c in legend.get_children():
 		legend.remove_child(c)
 		c.queue_free()
@@ -525,11 +646,19 @@ func _update_ui() -> void:
 	map_view.route = route
 	map_view.route_bad_index = validation.get("bad_index", -1)
 	map_view.route_complete = validation.get("complete", false)
+	map_view.alert_countdown = hazards.seconds_to_next_event if not round_over else 0.0
+	map_view.alert_progress = hazards.next_event_progress if not round_over else 0.0
 
 	# Top bar
-	lbl_round.text = "ROUND %d  |  %s" % [round_num, _difficulty_name().to_upper()]
+	lbl_round.text = "ROUND %d  ·  %s" % [round_num, _difficulty_name().to_upper()]
 	lbl_time.text = _fmt_time(round_time)
-	lbl_score.text = "%d" % (banked_score + (0 if round_over else scorer.total()))
+	var new_score := banked_score + (0 if round_over else scorer.total())
+	if new_score != _score_target:
+		_score_target = new_score
+		if _score_tween != null and _score_tween.is_running():
+			_score_tween.kill()
+		_score_tween = create_tween()
+		_score_tween.tween_method(_set_animated_score, _animated_score, float(_score_target), 0.45)
 	if not round_over and _first_group_in_state(SurvivorGroup.State.WAITING) != null:
 		var s := round_time - plan_clock_start
 		var b := ScoreKeeper.planning_bonus(s)
@@ -539,16 +668,21 @@ func _update_ui() -> void:
 		lbl_plan.text = "--"
 		lbl_plan.add_theme_color_override("font_color", COL_DIM)
 
-	# Group module: one LED row per group
+	# Group module: one team icon row per group
 	for i in groups.size():
 		var g := groups[i]
 		var blink_off := g.state == SurvivorGroup.State.BLOCKED and fmod(round_time, 0.6) > 0.3
-		group_leds[i].set_state(_group_led_color(g), g.state != SurvivorGroup.State.LOST and not blink_off)
+		var icon_color := UI_COLORS.TEAM_A_COLOR if g.label == "A" else UI_COLORS.TEAM_B_COLOR
+		var opacity := 0.25 if g.state == SurvivorGroup.State.LOST or blink_off else (1.0 if g == selected else 0.72)
+		group_icons[i].modulate = Color(icon_color, opacity)
 		group_btns[i].text = "%sGroup %s   %d/%d people   %s" % [
 			"> " if g == selected else "", g.label, g.survivors, g.initial_survivors, _state_text(g)]
 		group_btns[i].disabled = not g.can_plan()
-	for i in strike_leds.size():
-		strike_leds[i].set_state(COL_ALERT, i < scorer.lost)
+	for i in strike_icons.size():
+		strike_icons[i].texture = PEOPLE_LOST_FILLED_TEXTURE if i < scorer.lost else PEOPLE_LOST_EMPTY_TEXTURE
+		strike_icons[i].modulate = UI_COLORS.DANGER if i < scorer.lost else UI_COLORS.TEXT_SECONDARY
+	if selected != _styled_selected:
+		_apply_team_button_styles()
 
 	# Route module: one LED, one short line
 	var can_dispatch := false
@@ -572,9 +706,9 @@ func _update_ui() -> void:
 			lbl_route.text = "Keep going to the SAFE zone  (%d tiles)" % length
 		if validation["smoke"] > 0:
 			lbl_route.text += "\nSmoke x%d = -%d people" % [validation["smoke"], validation["smoke"]]
-	route_led.set_state(route_color, route_lit)
+	route_led.set_state(_team_color_for_group(selected) if selected != null else route_color, route_lit)
 	btn_dispatch.disabled = not can_dispatch
-	btn_dispatch.modulate = Color.WHITE.lerp(Color(1.3, 1.3, 1.3), 0.5 + 0.5 * sin(round_time * 6.0)) if can_dispatch else Color.WHITE
+	btn_dispatch.modulate = UiPalette.MINT.lerp(UiPalette.WHITE, 0.5 + 0.5 * sin(round_time * 6.0)) if can_dispatch else UiPalette.WHITE
 	if selected != null and selected.state == SurvivorGroup.State.BLOCKED:
 		btn_dispatch.text = "DISPATCH DETOUR"
 	elif selected != null:
@@ -583,9 +717,13 @@ func _update_ui() -> void:
 		btn_dispatch.text = "DISPATCH"
 	btn_undo.disabled = selected == null or route.size() <= 1
 	btn_clear.disabled = btn_undo.disabled
+	btn_undo.modulate = Color(UI_COLORS.WHITE, 0.55) if btn_undo.disabled else UI_COLORS.WHITE
+	btn_clear.modulate = Color(UI_COLORS.WHITE, 0.55) if btn_clear.disabled else UI_COLORS.WHITE
 
-	# Ops log (latest lines only)
-	lbl_log.text = "\n".join(PackedStringArray(log_lines.slice(maxi(0, log_lines.size() - LOG_SHOWN))))
+	map_view.route_eta_seconds = 0.0
+	if selected != null:
+		var plan_start := selected.blocked_since if selected.state == SurvivorGroup.State.BLOCKED else plan_clock_start
+		map_view.route_eta_seconds = maxf(0.0, round_time - plan_start)
 
 	# Hazard alert banner
 	var blocked: SurvivorGroup = null
@@ -599,7 +737,7 @@ func _update_ui() -> void:
 		var action := "halting..." if blocked.state == SurvivorGroup.State.MOVING else "draw a detour"
 		lbl_alert.text = "ROUTE BLOCKED  -  Group %s: %s   (%.1fs, +%d)" % [
 			blocked.label, action, rs, ScoreKeeper.response_bonus(rs)]
-		alert_led.set_state(COL_ALERT, fmod(round_time, 0.5) < 0.25)
+		alert_led.modulate.a = 0.65 + 0.35 * float(fmod(round_time, 0.5) < 0.25)
 		alert_panel.modulate.a = 0.85 + 0.15 * sin(round_time * 8.0)
 
 
@@ -610,8 +748,8 @@ func _show_results(total_survivors: int) -> void:
 	lbl_result_title.add_theme_color_override("font_color", tone)
 	lbl_result_sub.text = "ROUND %d  |  %s" % [round_num, _difficulty_name().to_upper()]
 	result_led.set_state(tone, true)
-	result_panel.add_theme_stylebox_override("panel", _style(Color(0.04, 0.07, 0.12, 0.97), tone, 14, 4, 0))
-	var banner := _style(Color("0f2c1f") if ok else Color("33100f"), tone, 10, 0, 14)
+	result_panel.add_theme_stylebox_override("panel", _style(COL_PANEL, COL_PANEL_EDGE, 14, 2, 0))
+	var banner := _style(COL_PANEL, UiPalette.MINT, 10, 1, 14)
 	banner.corner_radius_bottom_left = 0
 	banner.corner_radius_bottom_right = 0
 	result_banner.add_theme_stylebox_override("panel", banner)
@@ -622,7 +760,7 @@ func _show_results(total_survivors: int) -> void:
 	var ratio := float(scorer.delivered) / float(maxi(total_survivors, 1))
 	var stars := 0 if not ok else (3 if ratio >= 1.0 else (2 if ratio >= 0.75 else 1))
 	for i in result_stars.size():
-		result_stars[i].set_state(COL_WARN, i < stars)
+		result_stars[i].texture = _star_texture(i < stars)
 	for c in result_pips.get_children():
 		c.queue_free()
 	for i in total_survivors:
@@ -664,7 +802,7 @@ func _add_result_row(title: String, detail: String, pts: int) -> void:
 func _build_ui() -> void:
 	set_anchors_preset(Control.PRESET_FULL_RECT)
 	# Rajdhani (SIL OFL): a squared, technical face for the whole tablet UI.
-	var ui_theme := Theme.new()
+	var ui_theme := UI_THEME.duplicate() as Theme
 	var font_medium := load("res://assets/fonts/Rajdhani-Medium.ttf") as Font
 	var font_bold := load("res://assets/fonts/Rajdhani-Bold.ttf") as Font
 	if font_medium != null:
@@ -675,67 +813,48 @@ func _build_ui() -> void:
 			ui_theme.set_font_size("font_size", "Button", 18)
 	theme = ui_theme
 	var bg := ColorRect.new()
-	bg.color = Color("06080c")
+	bg.color = UiPalette.BG_DARK
 	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
 	add_child(bg)
 
-	# Tablet bezel
-	var bezel := PanelContainer.new()
-	bezel.set_anchors_preset(Control.PRESET_FULL_RECT)
-	bezel.offset_left = 8
-	bezel.offset_top = 8
-	bezel.offset_right = -8
-	bezel.offset_bottom = -8
-	# Thick rounded tablet frame: extra room at the top and bottom for the camera and home bar.
-	var frame_style := _style(COL_BEZEL, COL_BEZEL_EDGE, 36, 3, 16)
-	frame_style.content_margin_top = 30
-	frame_style.content_margin_bottom = 30
-	bezel.add_theme_stylebox_override("panel", frame_style)
-	add_child(bezel)
-	# Front camera and home bar, drawn on the frame but ignoring input.
-	var hw := Control.new()
-	hw.set_anchors_preset(Control.PRESET_FULL_RECT)
-	hw.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	add_child(hw)
-	var cam := UiWidgets.Led.new(9.0)
-	cam.set_state(Color("3a6a9a"), false)
-	hw.add_child(cam)
-	cam.set_anchors_and_offsets_preset(Control.PRESET_CENTER_TOP, Control.PRESET_MODE_KEEP_SIZE, 0)
-	cam.offset_top = 16
-	cam.offset_bottom = 25
-	var home := PanelContainer.new()
-	home.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	home.custom_minimum_size = Vector2(140, 5)
-	home.add_theme_stylebox_override("panel", _style(Color("56627a"), Color("56627a"), 3, 0, 0))
-	hw.add_child(home)
-	home.set_anchors_and_offsets_preset(Control.PRESET_CENTER_BOTTOM, Control.PRESET_MODE_MINSIZE, 0)
-	home.offset_top = -24
-	home.offset_bottom = -19
-	# The screen itself, inset in the frame.
+	# Keep the slim bezel clear while allowing its 9-slice edges to stay intact.
+	var content := MarginContainer.new()
+	content.set_anchors_preset(Control.PRESET_FULL_RECT)
+	content.add_theme_constant_override("margin_left", 20)
+	content.add_theme_constant_override("margin_top", 20)
+	content.add_theme_constant_override("margin_right", 20)
+	content.add_theme_constant_override("margin_bottom", 20)
+	add_child(content)
 	var screen := PanelContainer.new()
-	screen.add_theme_stylebox_override("panel", _style(COL_BG, Color("0b0f17"), 14, 2, 10))
+	screen.add_theme_stylebox_override("panel", _style(COL_PANEL, COL_PANEL_EDGE, 8, 1, 8))
 	screen.clip_contents = true
-	bezel.add_child(screen)
+	content.add_child(screen)
 	var vbox := VBoxContainer.new()
-	vbox.add_theme_constant_override("separation", 10)
+	vbox.add_theme_constant_override("separation", 12)
 	screen.add_child(vbox)
 
 	# Top bar
 	var top := PanelContainer.new()
-	top.add_theme_stylebox_override("panel", _style(COL_PANEL, COL_PANEL_EDGE, 6, 3, 8))
+	top.add_theme_stylebox_override("panel", _style(COL_PANEL, COL_PANEL_EDGE, 6, 1, 8))
 	vbox.add_child(top)
 	var top_h := HBoxContainer.new()
 	top_h.add_theme_constant_override("separation", 14)
 	top.add_child(top_h)
-	top_h.add_child(_label("EVAC GRID", 22, COL_ACCENT))
+	var logo := TextureRect.new()
+	logo.texture = LOGO_TEXTURE
+	logo.custom_minimum_size = Vector2(112, 34)
+	logo.expand_mode = TextureRect.EXPAND_KEEP_SIZE
+	logo.stretch_mode = TextureRect.STRETCH_KEEP
+	logo.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	top_h.add_child(logo)
 	top_h.add_child(_label("RESCUE OPS", 12, COL_DIM))
 	var spacer := Control.new()
 	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	top_h.add_child(spacer)
-	lbl_round = UiWidgets.Lcd.new("ROUND 1", 16, COL_TEXT)
+	lbl_round = UiWidgets.Lcd.new("ROUND 1", 18, COL_TEXT)
 	lbl_plan = UiWidgets.Lcd.new("PLAN --", 18, COL_OK)
-	lbl_time = UiWidgets.Lcd.new("00:00.0", 24, COL_ALERT)
-	lbl_score = UiWidgets.Lcd.new("0", 20, COL_WARN)
+	lbl_time = UiWidgets.Lcd.new("00:00.0", 28, COL_ACCENT)
+	lbl_score = UiWidgets.Lcd.new("0", 22, COL_WARN)
 	lbl_plan.custom_minimum_size.x = 200
 	lbl_time.custom_minimum_size.x = 130
 	lbl_score.custom_minimum_size.x = 120
@@ -744,11 +863,13 @@ func _build_ui() -> void:
 		if pair[0] != "":
 			top_h.add_child(_label(pair[0], 11, COL_DIM))
 		top_h.add_child(pair[1])
+	lbl_score_popup = _label("", 12, COL_OK)
+	top_h.add_child(lbl_score_popup)
 
 	# Body: map + side panel
 	var body := HBoxContainer.new()
 	body.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	body.add_theme_constant_override("separation", 10)
+	body.add_theme_constant_override("separation", 12)
 	vbox.add_child(body)
 
 	map_frame = PanelContainer.new()  # styled by set_visual_style()
@@ -759,6 +880,7 @@ func _build_ui() -> void:
 	map_area.clip_contents = true
 	map_frame.add_child(map_area)
 	map_view = MapView.new()
+	map_view.alert_icon_texture = ALERT_TEXTURE
 	map_view.set_anchors_preset(Control.PRESET_FULL_RECT)
 	map_view.tile_pressed.connect(_on_tile_pressed)
 	map_view.tile_dragged.connect(_on_tile_dragged)
@@ -770,15 +892,21 @@ func _build_ui() -> void:
 	alert_panel.offset_right = -12
 	alert_panel.offset_top = 10
 	alert_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	alert_panel.add_theme_stylebox_override("panel", _style(Color("5c0d12"), COL_ALERT, 6, 3, 10))
+	alert_panel.add_theme_stylebox_override("panel", _style(COL_PANEL, COL_PANEL_EDGE, 6, 1, 10))
 	var alert_h := HBoxContainer.new()
 	alert_h.add_theme_constant_override("separation", 12)
 	alert_h.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	alert_panel.add_child(alert_h)
-	alert_led = UiWidgets.Led.new(22.0)
+	alert_led = TextureRect.new()
+	alert_led.texture = ALERT_TEXTURE
+	alert_led.modulate = COL_ALERT
+	alert_led.custom_minimum_size = Vector2(64, 64)
+	alert_led.expand_mode = TextureRect.EXPAND_KEEP_SIZE
+	alert_led.stretch_mode = TextureRect.STRETCH_KEEP
+	alert_led.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	alert_led.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	alert_h.add_child(alert_led)
-	lbl_alert = _label("", 17, Color.WHITE)
+	lbl_alert = _label("", 17, UiPalette.WHITE)
 	lbl_alert.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	lbl_alert.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	lbl_alert.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -790,8 +918,9 @@ func _build_ui() -> void:
 	result_panel.set_anchors_preset(Control.PRESET_CENTER)
 	result_panel.grow_horizontal = Control.GROW_DIRECTION_BOTH
 	result_panel.grow_vertical = Control.GROW_DIRECTION_BOTH
+	result_panel.z_index = 10
 	result_panel.custom_minimum_size = Vector2(560, 0)
-	result_panel.add_theme_stylebox_override("panel", _style(Color(0.04, 0.07, 0.12, 0.97), COL_ACCENT, 14, 4, 0))
+	result_panel.add_theme_stylebox_override("panel", _style(COL_PANEL, COL_PANEL_EDGE, 14, 2, 0))
 	var rv := VBoxContainer.new()
 	rv.add_theme_constant_override("separation", 0)
 	result_panel.add_child(rv)
@@ -841,7 +970,12 @@ func _build_ui() -> void:
 	stars_h.alignment = BoxContainer.ALIGNMENT_CENTER
 	rating_box.add_child(stars_h)
 	for i in 3:
-		var star := UiWidgets.Led.new(28.0)
+		var star := TextureRect.new()
+		star.texture = _star_texture(false)
+		star.custom_minimum_size = Vector2(64, 64)
+		star.expand_mode = TextureRect.EXPAND_KEEP_SIZE
+		star.stretch_mode = TextureRect.STRETCH_KEEP
+		star.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		stars_h.add_child(star)
 		result_stars.append(star)
 	result_pips = HFlowContainer.new()
@@ -874,11 +1008,9 @@ func _build_ui() -> void:
 	lbl_result_note = _label("", 13, COL_DIM)
 	lbl_result_note.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	body_box.add_child(lbl_result_note)
-	btn_next = _button("NEXT ROUND  >>", Color("1c7c54"), _on_next_pressed)
+	btn_next = _button("NEXT ROUND  >>", _on_next_pressed)
 	btn_next.custom_minimum_size.y = 52
-	btn_next.add_theme_stylebox_override("normal", _style(Color("1c7c54"), Color("5be3a0"), 8, 3, 8))
-	btn_next.add_theme_stylebox_override("hover", _style(Color("23956a"), Color("8cf0bf"), 8, 3, 8))
-	btn_next.add_theme_stylebox_override("pressed", _style(Color("14583c"), Color("5be3a0"), 8, 3, 8))
+	_set_button_art(btn_next)
 	body_box.add_child(btn_next)
 	result_panel.visible = false
 	map_area.add_child(result_panel)
@@ -886,14 +1018,14 @@ func _build_ui() -> void:
 	# Side panel: stacked control-unit modules
 	var side := PanelContainer.new()
 	side.custom_minimum_size = Vector2(320, 0)
-	side.add_theme_stylebox_override("panel", _style(COL_PANEL, COL_PANEL_EDGE, 6, 3, 8))
+	side.add_theme_stylebox_override("panel", _style(COL_PANEL, COL_PANEL_EDGE, 6, 1, 8))
 	body.add_child(side)
 	var scroll := ScrollContainer.new()
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	side.add_child(scroll)
 	var sv := VBoxContainer.new()
 	sv.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	sv.add_theme_constant_override("separation", 8)
+	sv.add_theme_constant_override("separation", 12)
 	scroll.add_child(sv)
 
 	var mg := _add_module(sv, "YOUR TEAMS")
@@ -911,44 +1043,62 @@ func _build_ui() -> void:
 	route_row.add_child(route_led)
 	lbl_route = _wrap_label(14, COL_TEXT)
 	route_row.add_child(lbl_route)
+	hint_panel = PanelContainer.new()
+	hint_panel.add_theme_stylebox_override("panel",
+			_style(Color(UI_COLORS.ACCENT_TEAL, 0.08), UI_COLORS.TEAL_MID, 6, 1, 8))
 	lbl_hint = _wrap_label(12, COL_ACCENT)
 	lbl_hint.custom_minimum_size.y = 34
-	mr.add_child(lbl_hint)
+	hint_panel.add_child(lbl_hint)
+	mr.add_child(hint_panel)
 
-	btn_dispatch = _button("DISPATCH", Color("1c7c54"), _dispatch)
+	btn_dispatch = _button("DISPATCH", _dispatch)
 	btn_dispatch.custom_minimum_size.y = 64
 	btn_dispatch.add_theme_font_size_override("font_size", 20)
-	btn_dispatch.add_theme_stylebox_override("normal", _style(Color("1c7c54"), Color("5be3a0"), 8, 4, 8))
-	btn_dispatch.add_theme_stylebox_override("hover", _style(Color("23956a"), Color("8cf0bf"), 8, 4, 8))
-	btn_dispatch.add_theme_stylebox_override("pressed", _style(Color("14583c"), Color("5be3a0"), 8, 4, 8))
-	btn_dispatch.add_theme_stylebox_override("disabled", _style(Color("19212e"), Color("2c384c"), 8, 4, 8))
+	_set_dispatch_button_styles(btn_dispatch)
+	btn_dispatch.button_down.connect(_animate_dispatch_press.bind(true))
+	btn_dispatch.button_up.connect(_animate_dispatch_press.bind(false))
 	mr.add_child(btn_dispatch)
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation", 6)
-	btn_undo = _button("UNDO", Color("2c3c58"), _undo)
-	btn_clear = _button("CLEAR", Color("2c3c58"), _clear_route)
+	btn_undo = _button("UNDO", _undo)
+	btn_clear = _button("CLEAR", _clear_route)
 	for b in [btn_undo, btn_clear]:
 		b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		_set_secondary_button_styles(b)
 		row.add_child(b)
 	mr.add_child(row)
 
-	# Losses module: one red light per survivor lost this round
+	# Losses module: one sprite slot per possible survivor loss
 	var ml := _add_module(sv, "PEOPLE LOST")
 	var strikes := HBoxContainer.new()
 	strikes.add_theme_constant_override("separation", 10)
 	ml.add_child(strikes)
 	for i in MAX_STRIKES:
-		var led := UiWidgets.Led.new(18.0)
-		strikes.add_child(led)
-		strike_leds.append(led)
+		var icon := TextureRect.new()
+		icon.texture = PEOPLE_LOST_EMPTY_TEXTURE
+		icon.custom_minimum_size = Vector2(24, 24)
+		icon.expand_mode = TextureRect.EXPAND_KEEP_SIZE
+		icon.stretch_mode = TextureRect.STRETCH_KEEP
+		icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		strikes.add_child(icon)
+		strike_icons.append(icon)
 
 	# Ops log module
 	var mo := _add_module(sv, "OPS LOG")
-	lbl_log = _wrap_label(11, COL_DIM)
+	lbl_log = RichTextLabel.new()
+	lbl_log.custom_minimum_size.y = 100
+	lbl_log.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	lbl_log.bbcode_enabled = true
+	lbl_log.scroll_following = true
+	lbl_log.selection_enabled = false
+	lbl_log.fit_content = false
+	lbl_log.add_theme_font_size_override("normal_font_size", 14)
+	lbl_log.add_theme_color_override("default_color", UI_COLORS.TEXT_SECONDARY)
 	mo.add_child(lbl_log)
+	_refresh_ops_log()
 
 	# Help (legend + keys), hidden until asked for
-	var btn_help := _button("? LEGEND / KEYS", Color("2c3c58"), func() -> void: help_box.visible = not help_box.visible)
+	var btn_help := _button("? LEGEND / KEYS", func() -> void: help_box.visible = not help_box.visible)
 	sv.add_child(btn_help)
 	help_box = VBoxContainer.new()
 	help_box.add_theme_constant_override("separation", 6)
@@ -963,6 +1113,39 @@ func _build_ui() -> void:
 	keys.text = "Keys: Enter dispatch, Z/Backspace undo, C clear, Tab next group, Esc deselect, V map style. Tap an earlier route tile to cut back to it."
 	help_box.add_child(keys)
 
+	var tablet_frame := NinePatchRect.new()
+	tablet_frame.texture = TABLET_FRAME_TEXTURE
+	tablet_frame.patch_margin_left = 32
+	tablet_frame.patch_margin_top = 32
+	tablet_frame.patch_margin_right = 32
+	tablet_frame.patch_margin_bottom = 32
+	tablet_frame.set_anchors_preset(Control.PRESET_FULL_RECT)
+	tablet_frame.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	tablet_frame.z_index = 100
+	add_child(tablet_frame)
+	var scanline_overlay := ColorRect.new()
+	scanline_overlay.name = "ScanlineOverlay"
+	scanline_overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
+	scanline_overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	scanline_overlay.z_index = 90
+	var scanline_material := ShaderMaterial.new()
+	scanline_material.shader = SCANLINE_SHADER
+	scanline_material.set_shader_parameter("intensity", 0.018)
+	scanline_overlay.material = scanline_material
+	add_child(scanline_overlay)
+	_juice_flash = ColorRect.new()
+	_juice_flash.name = "AlertFlashOverlay"
+	_juice_flash.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_juice_flash.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var flash_material := ShaderMaterial.new()
+	flash_material.shader = ALERT_FLASH_SHADER
+	flash_material.set_shader_parameter("flash_color", UI_COLORS.DANGER)
+	flash_material.set_shader_parameter("intensity", 0.0)
+	_juice_flash.material = flash_material
+	_juice_flash.visible = false
+	_juice_flash.z_index = 95
+	add_child(_juice_flash)
+
 
 ## A framed control-unit module with a title; returns the box to fill.
 func _add_module(parent: Control, title: String) -> VBoxContainer:
@@ -972,7 +1155,7 @@ func _add_module(parent: Control, title: String) -> VBoxContainer:
 	var box := VBoxContainer.new()
 	box.add_theme_constant_override("separation", 6)
 	frame.add_child(box)
-	box.add_child(_label(title, 11, COL_ACCENT))
+	box.add_child(_label(title, 14, COL_ACCENT))
 	return box
 
 
@@ -980,7 +1163,7 @@ func _style(bg_color: Color, edge: Color, radius: int, border: int, pad: int) ->
 	var sb := StyleBoxFlat.new()
 	sb.bg_color = bg_color
 	sb.border_color = edge
-	sb.set_border_width_all(border)
+	sb.set_border_width_all(clampi(border, 1, 2))
 	sb.set_corner_radius_all(radius)
 	sb.set_content_margin_all(pad)
 	return sb
@@ -989,7 +1172,7 @@ func _style(bg_color: Color, edge: Color, radius: int, border: int, pad: int) ->
 func _label(text: String, font_size: int, color: Color) -> Label:
 	var l := Label.new()
 	l.text = text
-	l.add_theme_font_size_override("font_size", font_size + 2)
+	l.add_theme_font_size_override("font_size", maxi(14, font_size + 2))
 	l.add_theme_color_override("font_color", color)
 	l.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	return l
@@ -1003,17 +1186,90 @@ func _wrap_label(font_size: int, color: Color) -> Label:
 	return l
 
 
-func _button(text: String, color: Color, callback: Callable) -> Button:
+func _button(text: String, callback: Callable) -> Button:
 	var b := Button.new()
 	b.text = text
 	b.focus_mode = Control.FOCUS_NONE
 	b.custom_minimum_size.y = 38
-	b.add_theme_stylebox_override("normal", _style(color, color.lightened(0.25), 6, 1, 6))
-	b.add_theme_stylebox_override("hover", _style(color.lightened(0.12), color.lightened(0.4), 6, 1, 6))
-	b.add_theme_stylebox_override("pressed", _style(color.darkened(0.2), color.lightened(0.25), 6, 1, 6))
-	b.add_theme_stylebox_override("disabled", _style(Color("19212e"), Color("273246"), 6, 1, 6))
-	b.add_theme_color_override("font_color", Color.WHITE)
-	b.add_theme_color_override("font_hover_color", Color.WHITE)
-	b.add_theme_color_override("font_disabled_color", COL_DIM)
+	_set_button_art(b)
+	b.add_theme_color_override("font_color", UiPalette.MINT)
+	b.add_theme_color_override("font_hover_color", UiPalette.WHITE)
+	b.add_theme_color_override("font_pressed_color", UiPalette.MINT)
+	b.add_theme_color_override("font_disabled_color", UiPalette.TEAL_MID)
 	b.pressed.connect(callback)
 	return b
+
+
+func _button_art(state: int) -> StyleBoxTexture:
+	var atlas := AtlasTexture.new()
+	atlas.atlas = BUTTONS_SHEET
+	atlas.region = Rect2(state * 192, 0, 192, 64)
+	var style := StyleBoxTexture.new()
+	style.texture = atlas
+	style.texture_margin_left = 20
+	style.texture_margin_top = 20
+	style.texture_margin_right = 20
+	style.texture_margin_bottom = 20
+	style.set_content_margin_all(12)
+	return style
+
+
+func _set_button_art(button: Button) -> void:
+	button.add_theme_stylebox_override("normal", _button_art(0))
+	button.add_theme_stylebox_override("hover", _button_art(1))
+	button.add_theme_stylebox_override("pressed", _button_art(2))
+	button.add_theme_stylebox_override("disabled", _button_art(3))
+
+
+func _set_dispatch_button_styles(button: Button) -> void:
+	var normal := _flat_button_style(UI_COLORS.BG_PANEL, UI_COLORS.ACCENT_TEAL, 2)
+	normal.shadow_color = Color(UI_COLORS.ACCENT_TEAL, 0.24)
+	normal.shadow_size = 5
+	button.add_theme_stylebox_override("normal", normal)
+	button.add_theme_stylebox_override("hover",
+			_flat_button_style(Color(UI_COLORS.ACCENT_TEAL, 0.16), UI_COLORS.WHITE, 2))
+	button.add_theme_stylebox_override("pressed",
+			_flat_button_style(Color(UI_COLORS.ACCENT_TEAL, 0.3), UI_COLORS.ACCENT_TEAL, 2))
+	button.add_theme_stylebox_override("disabled",
+			_flat_button_style(UI_COLORS.BG_PANEL, UI_COLORS.TEAL, 1))
+	button.add_theme_color_override("font_color", UI_COLORS.ACCENT_TEAL)
+	button.add_theme_color_override("font_hover_color", UI_COLORS.WHITE)
+	button.add_theme_color_override("font_pressed_color", UI_COLORS.BG_DARK)
+	button.add_theme_color_override("font_disabled_color", UI_COLORS.TEAL_MID)
+
+
+func _set_secondary_button_styles(button: Button) -> void:
+	button.add_theme_stylebox_override("normal",
+			_flat_button_style(UI_COLORS.BG_PANEL, UI_COLORS.TEAL_MID, 1))
+	button.add_theme_stylebox_override("hover",
+			_flat_button_style(Color(UI_COLORS.TEAL, 0.5), UI_COLORS.TEXT_SECONDARY, 1))
+	button.add_theme_stylebox_override("pressed",
+			_flat_button_style(Color(UI_COLORS.TEAL, 0.75), UI_COLORS.ACCENT_TEAL, 1))
+	button.add_theme_stylebox_override("disabled",
+			_flat_button_style(UI_COLORS.BG_PANEL, UI_COLORS.TEAL, 1))
+
+
+func _flat_button_style(background: Color, edge: Color, border_width: int) -> StyleBoxFlat:
+	var style := StyleBoxFlat.new()
+	style.bg_color = background
+	style.border_color = edge
+	style.set_border_width_all(border_width)
+	style.set_corner_radius_all(7)
+	style.content_margin_left = 12
+	style.content_margin_right = 12
+	style.content_margin_top = 8
+	style.content_margin_bottom = 8
+	return style
+
+
+func _animate_dispatch_press(is_pressed: bool) -> void:
+	btn_dispatch.pivot_offset = btn_dispatch.size * 0.5
+	var target_scale := Vector2.ONE * (0.95 if is_pressed else 1.0)
+	create_tween().tween_property(btn_dispatch, "scale", target_scale, 0.08)
+
+
+func _star_texture(lit: bool) -> AtlasTexture:
+	var atlas := AtlasTexture.new()
+	atlas.atlas = STAR_SHEET
+	atlas.region = Rect2(0 if lit else 64, 0, 64, 64)
+	return atlas
