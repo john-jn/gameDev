@@ -81,7 +81,12 @@ enum Style { DEBUG_SHAPES, DISPATCH_STYLE }
 @export var fire_glow := Color(1.0, 0.36, 0.12, 0.32)
 @export var smoke := Color(1.0, 0.62, 0.1, 0.4)
 @export var smoke_line := Color(0.78, 0.45, 0.05, 0.85)
+## Smoldering tiles (about to ignite): pulsing ember overlay.
+@export var ember := Color(1.0, 0.3, 0.08, 0.55)
+@export var ember_core := Color("ffb347")
 @export var alert := Color("ff4d3d")
+## Ring around a group losing people to smoke while it stands still.
+@export var smoke_drain_ring := Color("ffb020")
 
 @export_group("Survivors")
 @export var survivor := Color("ffe066")

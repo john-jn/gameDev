@@ -45,6 +45,8 @@ var route_bad_index := -1
 var route_complete := false
 ## Fire tiles that cut a route; drawn with a pulsing alert ring.
 var alert_tiles: Array[Vector2i] = []
+## Full smolder warning time, so embers pulse faster as ignition nears.
+var smolder_time := 2.0
 
 var _time := 0.0
 var _hover := CityMap.NO_TILE
@@ -334,12 +336,15 @@ func _draw_overlay(ci: CanvasItem) -> void:
 	if th.safe_highlight_enabled:
 		_draw_safe_zones(ci, font, pulse)
 
-	# 2. Hazards: smoke (hatched amber) then fire (red with X and flame).
+	# 2. Hazards: smoke (hatched amber), smoldering embers, then fire (red with X and flame).
 	for y in map.height:
 		for x in map.width:
 			var p := Vector2i(x, y)
 			if map.is_smoke(p):
 				MapPainter.draw_smoke(ci, th, tile_rect(p))
+	for s in map.smolders:
+		var urgency := 1.0 - clampf(map.smolders[s] / maxf(smolder_time, 0.01), 0.0, 1.0)
+		MapPainter.draw_smolder(ci, th, tile_rect(s), _time, urgency)
 	for f in map.fires:
 		MapPainter.draw_fire(ci, th, tile_rect(f), _time)
 	for a in alert_tiles:
@@ -389,6 +394,12 @@ func _draw_overlay(ci: CanvasItem) -> void:
 			ci.draw_arc(c, rad + 5.0 + 4.0 * pulse, 0, TAU, 32, th.alert, 3.0, true)
 		elif g.state == SurvivorGroup.State.WAITING:
 			ci.draw_arc(c, rad + 3.0 + 2.0 * pulse, 0, TAU, 32, th.waiting_ring, 1.5, true)
+		if g.is_draining(map):
+			# Countdown ring that fills toward the next smoke loss, flashing amber.
+			var ring := rad + 9.0
+			var k := clampf(g.smoke_timer / g.smoke_drain, 0.0, 1.0)
+			ci.draw_arc(c, ring, 0, TAU, 32, Color(th.smoke_drain_ring, 0.25), 3.0, true)
+			ci.draw_arc(c, ring, -PI * 0.5, -PI * 0.5 + TAU * k, 32, Color(th.smoke_drain_ring, 0.55 + 0.45 * pulse), 4.0, true)
 		var fill := th.survivor_blocked if g.state == SurvivorGroup.State.BLOCKED else th.survivor
 		MapPainter.draw_survivor(ci, th, font, c, rad, g.label, g.survivors, fill)
 

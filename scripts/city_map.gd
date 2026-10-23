@@ -22,6 +22,9 @@ var tiles := PackedInt32Array()
 ## Tiles currently on fire (Vector2i -> true). Fire tiles are impassable.
 ## Road tiles orthogonally next to a fire are "smoke": passable but deadly.
 var fires: Dictionary = {}
+## Road tiles about to catch fire (Vector2i -> seconds left). A smoldering
+## tile is a warning only: it is passable and does no harm until it ignites.
+var smolders: Dictionary = {}
 var survivor_starts: Array[Vector2i] = []
 var survivor_sizes: Array[int] = []
 ## How the map was made, for logs and reproduction, e.g.
@@ -48,6 +51,7 @@ func setup(w: int, h: int, fill: int) -> void:
 	_fire_mask.resize(w * h)
 	_fire_mask.fill(0)
 	fires.clear()
+	smolders.clear()
 	survivor_starts.clear()
 	survivor_sizes.clear()
 	gen_info = {}
@@ -115,9 +119,16 @@ func is_adjacent(a: Vector2i, b: Vector2i) -> bool:
 	return absi(a.x - b.x) + absi(a.y - b.y) == 1
 
 
+## Only open road burns. The safe zone, rubble closures (BUILDING tiles),
+## buildings and parks can never smolder or catch fire.
+func can_burn(p: Vector2i) -> bool:
+	return get_tile(p) == Tile.ROAD
+
+
 func add_fire(p: Vector2i) -> void:
-	if in_bounds(p):
+	if can_burn(p):
 		fires[p] = true
+		smolders.erase(p)
 		_fire_mask[p.y * width + p.x] = 1
 
 
@@ -125,6 +136,21 @@ func remove_fire(p: Vector2i) -> void:
 	if in_bounds(p):
 		fires.erase(p)
 		_fire_mask[p.y * width + p.x] = 0
+
+
+func is_smoldering(p: Vector2i) -> bool:
+	return smolders.has(p)
+
+
+## Marks `p` to ignite in `seconds`. Ignored for tiles that cannot burn or
+## are already burning or smoldering.
+func add_smolder(p: Vector2i, seconds: float) -> void:
+	if can_burn(p) and not fires.has(p) and not smolders.has(p):
+		smolders[p] = seconds
+
+
+func remove_smolder(p: Vector2i) -> void:
+	smolders.erase(p)
 
 
 func is_road_closure(p: Vector2i) -> bool:

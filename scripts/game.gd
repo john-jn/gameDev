@@ -5,7 +5,7 @@ extends Control
 ##   MapView                      drawing + pointer input -> route editing here
 ##   RouteValidator               route legality checks
 ##   SurvivorGroup                tile-by-tile movement
-##   HazardManager                fires that cut active routes
+##   HazardManager                fire that spreads along the roads
 ##   ScoreKeeper                  transparent scoring
 ## The tablet UI is built in code so the scene file stays minimal.
 ## The map's look is one VisualTheme, picked here (see `visual_style`) and
@@ -56,12 +56,21 @@ var rng := RandomNumberGenerator.new()
 var round_num := 1
 var banked_score := 0
 var last_round_success := false
+## A run lasts until a round is failed (game over); TRY AGAIN starts a new
+## run from round 1.
+var run_saved := 0       ## survivors delivered this run, the failed round included
+var best_score := 0      ## best final score on this device, loaded at start-up
+var best_round := 0      ## round reached on that best run
+var new_best := false    ## the run that just ended beat the stored best
+## Where the best score is kept; tests point it at a scratch file.
+var best_score_path := "user://best_score.cfg"
 
 var map: CityMap
 var groups: Array[SurvivorGroup] = []
 var hazards := HazardManager.new()
 var scorer := ScoreKeeper.new()
 var selected: SurvivorGroup = null
+var stop_target: SurvivorGroup = null  ## moving group the STOP button halts (last dispatched or tapped)
 var route: Array[Vector2i] = []
 var validation: Dictionary = {}
 var round_time := 0.0
@@ -96,7 +105,9 @@ var result_panel: PanelContainer
 var lbl_result_title: Label
 var lbl_result_sub: Label
 var lbl_result_saved: Label
+var lbl_result_saved_title: Label
 var lbl_result_total: Label
+var lbl_result_total_title: Label
 var result_banner: PanelContainer
 var result_led: UiWidgets.Led
 var result_stars: Array[UiWidgets.Led] = []
@@ -118,6 +129,7 @@ func _ready() -> void:
 			visual_style = VisualTheme.Style.DISPATCH_STYLE
 	_build_ui()
 	set_visual_style(visual_style)
+	_load_best_score()
 	_start_round()
 
 
@@ -130,8 +142,13 @@ func _start_round() -> void:
 		groups.append(SurvivorGroup.new(i, char(65 + i), map.survivor_starts[i], map.survivor_sizes[i]))
 	hazards = HazardManager.new()
 	hazards.setup(round_num, rng)
+	for g in groups:
+		g.fire_lethal = hazards.fire_lethal
+		g.smoke_drain = hazards.smoke_drain
+	hazards.place_starting_fires(map, groups)
 	scorer = ScoreKeeper.new()
 	selected = null
+	stop_target = null
 	route.clear()
 	round_time = 0.0
 	plan_clock_start = 0.0
@@ -141,8 +158,11 @@ func _start_round() -> void:
 	_build_group_rows()
 	result_panel.visible = false
 	alert_panel.visible = false
-	_log("Round %d (%s): %d groups, %d fire(s) on map, %d timed alert(s) incoming." % [
-		round_num, _difficulty_name(), groups.size(), map.fires.size(), hazards.events_remaining])
+	_log("Round %d (%s): %d groups, %d fire(s) burning, spreading in %ds, %d more reported during the round%s." % [
+		round_num, _difficulty_name(), groups.size(), map.fires.size(), roundi(hazards.grace), hazards.spot_fires,
+		"" if hazards.fire_lethal else " (training: groups stop before fire)"])
+	if round_num == 1 and best_score > 0:
+		_log("New run. Best score to beat: %d (round %d)." % [best_score, best_round])
 	# MapGenerator.build_from_seed(round, seed) rebuilds this exact map.
 	print("Evac Grid round %d map: %s" % [round_num, map.gen_info])
 	_notify("Tap a yellow survivor group to start planning. The plan clock is running!", COL_ACCENT)
@@ -157,9 +177,11 @@ func _process(delta: float) -> void:
 		for g in groups:
 			for ev in g.step(delta, map):
 				_on_group_event(g, ev)
-		var fire := hazards.update(delta, map, groups)
-		if fire != CityMap.NO_TILE:
+		for fire in hazards.update(delta, map, groups):
 			_on_hazard(fire)
+		for spot in hazards.spotted:
+			map_view.popup(spot, "FIRE REPORTED", COL_WARN)
+			_log("FIRE REPORTED at (%d, %d) - it ignites in %.0fs." % [spot.x, spot.y, hazards.spot_warning])
 		_check_round_end()
 	_update_ui()
 
@@ -168,7 +190,10 @@ func _on_group_event(g: SurvivorGroup, ev: Dictionary) -> void:
 	var tile: Vector2i = ev["tile"]
 	match ev["type"]:
 		"halted":
-			_log("Group %s stopped at (%d, %d) before the fire." % [g.label, tile.x, tile.y])
+			if ev.get("manual", false):
+				_log("Group %s stopped at (%d, %d)." % [g.label, tile.x, tile.y])
+			else:
+				_log("Group %s stopped at (%d, %d) before the fire." % [g.label, tile.x, tile.y])
 			# Auto-select the stranded group unless the operator is mid-plan elsewhere.
 			if selected == null or route.size() <= 1:
 				_select_group(g)
@@ -183,7 +208,15 @@ func _on_group_event(g: SurvivorGroup, ev: Dictionary) -> void:
 			_log("Group %s SAFE: %d survivors (+%d), efficiency %d%% (+%d)." % [
 				g.label, g.survivors, res["rescue"], roundi(res["ratio"] * 100.0), res["efficiency"]])
 		"lost":
-			_log("Group %s was lost in the smoke." % g.label)
+			if ev.get("cause", "") == "fire":
+				var count: int = ev.get("count", 0)
+				var pts := 0
+				for i in count:
+					pts += scorer.record_casualty()
+				map_view.popup(tile, "-%d survivors (%d)" % [count, pts], COL_ALERT)
+				_log("Group %s was caught by the fire: %d lost (%d)." % [g.label, count, pts])
+			else:
+				_log("Group %s was lost in the smoke." % g.label)
 
 
 func _on_hazard(fire: Vector2i) -> void:
@@ -192,10 +225,16 @@ func _on_hazard(fire: Vector2i) -> void:
 	var hit: Array[String] = []
 	for g in groups:
 		if g.remaining_contains(fire):
-			g.request_halt(fire, round_time)
+			# Training round only: the group stops by itself before the fire.
+			# From round 2 the operator has to press STOP.
+			if not hazards.fire_lethal:
+				g.request_halt(fire, round_time)
 			hit.append(g.label)
 	if hit.is_empty():
 		_log("Fire reported at (%d, %d)." % [fire.x, fire.y])
+	elif hazards.fire_lethal:
+		_log("ALERT: fire at (%d, %d) is on the route of Group %s - STOP it!" % [fire.x, fire.y, ", ".join(PackedStringArray(hit))])
+		_notify("Fire ahead of Group %s! Press STOP before it walks in." % hit[0], COL_ALERT)
 	else:
 		_log("ALERT: fire at (%d, %d) cuts the route of Group %s!" % [fire.x, fire.y, ", ".join(PackedStringArray(hit))])
 
@@ -211,8 +250,16 @@ func _check_round_end() -> void:
 	# A round succeeds when at least half of all survivors reach safety.
 	last_round_success = scorer.delivered * 2 >= total_survivors
 	scorer.finish_round(last_round_success, round_num)
+	run_saved += scorer.delivered
 	if last_round_success:
 		banked_score += scorer.total()
+	else:
+		# Game over. The final score is what the run banked before this round.
+		new_best = banked_score > best_score
+		if new_best:
+			best_score = banked_score
+			best_round = round_num
+			_save_best_score()
 	selected = null
 	route.clear()
 	_show_results(total_survivors)
@@ -221,7 +268,39 @@ func _check_round_end() -> void:
 func _on_next_pressed() -> void:
 	if last_round_success:
 		round_num += 1
+	else:
+		# TRY AGAIN after a game over: a new run from round 1, on a new random map.
+		round_num = 1
+		banked_score = 0
+		run_saved = 0
+		new_best = false
 	_start_round()
+
+
+## Loads the best score. A missing, unreadable or malformed file counts as
+## no best yet; it never stops the game.
+func _load_best_score() -> void:
+	best_score = 0
+	best_round = 0
+	var cfg := ConfigFile.new()
+	if cfg.load(best_score_path) != OK:
+		return
+	var s: Variant = cfg.get_value("best", "score", 0)
+	var r: Variant = cfg.get_value("best", "round", 0)
+	if typeof(s) == TYPE_INT and typeof(r) == TYPE_INT:
+		best_score = maxi(s, 0)
+		best_round = maxi(r, 0)
+
+
+## Stores the best score. A failed write is logged and play goes on.
+func _save_best_score() -> void:
+	var cfg := ConfigFile.new()
+	cfg.set_value("best", "score", best_score)
+	cfg.set_value("best", "round", best_round)
+	var err := cfg.save(best_score_path)
+	if err != OK:
+		push_warning("Could not save the best score to %s (error %d)." % [best_score_path, err])
+		_log("Could not save the best score (error %d)." % err)
 
 
 # --- Operator actions ---------------------------------------------------------
@@ -241,7 +320,8 @@ func _on_tile_pressed(p: Vector2i) -> void:
 	if selected == null:
 		var mover := _moving_group_at(p)
 		if mover != null:
-			_notify("Group %s is already en route." % mover.label, COL_DIM)
+			stop_target = mover
+			_notify("Group %s is en route. Press STOP to halt it." % mover.label, COL_DIM)
 		else:
 			map_view.flash_invalid(p)
 			_notify("Select a survivor group first (yellow circles).", COL_WARN)
@@ -293,6 +373,8 @@ func _try_extend(p: Vector2i) -> void:
 	route.append(p)
 	if map.is_safe(p):
 		_notify("Route reaches the SAFE zone. Press DISPATCH (Enter).", COL_OK)
+	elif map.is_smoldering(p):
+		_notify("Warning: that road is smoldering and will catch fire soon.", COL_WARN)
 	elif map.is_smoke(p):
 		_notify("Warning: smoke tile - each one crossed costs a survivor.", COL_WARN)
 	else:
@@ -329,6 +411,7 @@ func _dispatch() -> void:
 		kind, selected.label, route.size() - 1, shortest, secs, pts, "response" if is_reroute else "planning"])
 	map_view.popup(selected.tile, "+%d" % pts, COL_ACCENT)
 	selected.dispatch(route)
+	stop_target = selected
 	plan_clock_start = round_time
 	selected = null
 	route.clear()
@@ -339,8 +422,16 @@ func _dispatch() -> void:
 		_notify("Dispatched. Select the next group, and watch for hazard alerts.", COL_OK)
 
 
+## UNDO while a route is being planned; STOP for a moving group otherwise.
 func _undo() -> void:
-	if selected != null and route.size() > 1:
+	if selected == null:
+		var g := _stop_candidate()
+		if g != null:
+			g.stop(round_time)
+			_log("STOP: Group %s halting." % g.label)
+			_notify("Group %s stopping. Draw a detour from where it halts, then DISPATCH." % g.label, COL_WARN)
+		return
+	if route.size() > 1:
 		route.pop_back()
 
 
@@ -410,6 +501,31 @@ func _first_group_in_state(s: int) -> SurvivorGroup:
 	return null
 
 
+## The moving group STOP would halt: the last one dispatched or tapped, else
+## any moving group that is not already stopping.
+func _stop_candidate() -> SurvivorGroup:
+	if stop_target != null and stop_target.state == SurvivorGroup.State.MOVING and not stop_target.halt_requested:
+		return stop_target
+	for g in groups:
+		if g.state == SurvivorGroup.State.MOVING and not g.halt_requested:
+			return g
+	return null
+
+
+## Lethal rounds: a moving group with fire (or a smoldering tile) still ahead
+## on its route, which walks into it unless the operator presses STOP.
+func _group_heading_into_fire() -> SurvivorGroup:
+	if not hazards.fire_lethal:
+		return null
+	for g in groups:
+		if g.state != SurvivorGroup.State.MOVING or g.halt_requested:
+			continue
+		for i in range(g.index + 1, g.path.size()):
+			if map.is_fire(g.path[i]) or map.is_smoldering(g.path[i]):
+				return g
+	return null
+
+
 func _difficulty_name() -> String:
 	return DIFFICULTY_NAMES[mini(round_num - 1, DIFFICULTY_NAMES.size() - 1)]
 
@@ -470,8 +586,16 @@ func _build_group_rows() -> void:
 
 
 func _on_group_row_pressed(g: SurvivorGroup) -> void:
-	if not round_over:
-		_select_group(g)
+	if round_over:
+		return
+	if g.state == SurvivorGroup.State.MOVING:
+		# A moving group can't be planned for; picking it aims the STOP button.
+		selected = null
+		route.clear()
+		stop_target = g
+		_notify("Group %s is en route. Press STOP to halt it." % g.label, COL_DIM)
+		return
+	_select_group(g)
 
 
 func _log(text: String) -> void:
@@ -505,7 +629,8 @@ func set_visual_style(s: VisualTheme.Style) -> void:
 		legend.remove_child(c)
 		c.queue_free()
 	var items := [["road", "Road"], ["building", "Building"], ["park", "Park"], ["safe", "Safe zone"],
-			["survivor", "Survivors"], ["route", "Your route"], ["fire", "Fire (blocked)"], ["smoke", "Smoke (-1 ppl)"]]
+			["survivor", "Survivors"], ["route", "Your route"], ["fire", "Fire"], ["smolder", "Catching fire"],
+			["smoke", "Smoke (-1 ppl)"]]
 	if s == VisualTheme.Style.DISPATCH_STYLE:
 		items.append(["closed", "Closed road"])
 	for item in items:
@@ -525,6 +650,7 @@ func _update_ui() -> void:
 	map_view.route = route
 	map_view.route_bad_index = validation.get("bad_index", -1)
 	map_view.route_complete = validation.get("complete", false)
+	map_view.smolder_time = hazards.smolder_time
 
 	# Top bar
 	lbl_round.text = "ROUND %d  |  %s" % [round_num, _difficulty_name().to_upper()]
@@ -544,9 +670,10 @@ func _update_ui() -> void:
 		var g := groups[i]
 		var blink_off := g.state == SurvivorGroup.State.BLOCKED and fmod(round_time, 0.6) > 0.3
 		group_leds[i].set_state(_group_led_color(g), g.state != SurvivorGroup.State.LOST and not blink_off)
-		group_btns[i].text = "%sGroup %s   %d/%d people   %s" % [
-			"> " if g == selected else "", g.label, g.survivors, g.initial_survivors, _state_text(g)]
-		group_btns[i].disabled = not g.can_plan()
+		var smoke_note := "   SMOKE -1 in %.1fs" % (g.smoke_drain - g.smoke_timer) if g.is_draining(map) else ""
+		group_btns[i].text = "%sGroup %s   %d/%d people   %s%s" % [
+			"> " if g == selected else "", g.label, g.survivors, g.initial_survivors, _state_text(g), smoke_note]
+		group_btns[i].disabled = not (g.can_plan() or g.state == SurvivorGroup.State.MOVING)
 	for i in strike_leds.size():
 		strike_leds[i].set_state(COL_ALERT, i < scorer.lost)
 
@@ -581,20 +708,34 @@ func _update_ui() -> void:
 		btn_dispatch.text = "DISPATCH GROUP %s" % selected.label
 	else:
 		btn_dispatch.text = "DISPATCH"
-	btn_undo.disabled = selected == null or route.size() <= 1
-	btn_clear.disabled = btn_undo.disabled
+	# UNDO while planning a route; STOP while a group is moving and none is selected.
+	var stopper := _stop_candidate() if selected == null and not round_over else null
+	if stopper != null:
+		btn_undo.text = "STOP GROUP %s" % stopper.label
+		btn_undo.disabled = false
+		btn_undo.modulate = Color(1.45, 0.7, 0.65)
+	else:
+		btn_undo.text = "UNDO"
+		btn_undo.disabled = selected == null or route.size() <= 1
+		btn_undo.modulate = Color.WHITE
+	btn_clear.disabled = selected == null or route.size() <= 1
 
 	# Ops log (latest lines only)
 	lbl_log.text = "\n".join(PackedStringArray(log_lines.slice(maxi(0, log_lines.size() - LOG_SHOWN))))
 
-	# Hazard alert banner
+	# Hazard alert banner: fire ahead of a moving group first, then halted groups.
+	var danger := _group_heading_into_fire()
 	var blocked: SurvivorGroup = null
 	for g in groups:
 		if g.state == SurvivorGroup.State.BLOCKED or (g.state == SurvivorGroup.State.MOVING and g.halt_requested):
 			blocked = g
 			break
-	alert_panel.visible = blocked != null and not round_over
-	if blocked != null:
+	alert_panel.visible = (danger != null or blocked != null) and not round_over
+	if danger != null:
+		lbl_alert.text = "FIRE AHEAD  -  Group %s: press STOP (Z) or it walks into the fire" % danger.label
+		alert_led.set_state(COL_ALERT, fmod(round_time, 0.3) < 0.15)
+		alert_panel.modulate.a = 0.85 + 0.15 * sin(round_time * 12.0)
+	elif blocked != null:
 		var rs := round_time - blocked.blocked_since
 		var action := "halting..." if blocked.state == SurvivorGroup.State.MOVING else "draw a detour"
 		lbl_alert.text = "ROUTE BLOCKED  -  Group %s: %s   (%.1fs, +%d)" % [
@@ -603,12 +744,15 @@ func _update_ui() -> void:
 		alert_panel.modulate.a = 0.85 + 0.15 * sin(round_time * 8.0)
 
 
+## Round result panel. A failed round ends the run, so the same panel then
+## shows GAME OVER with the run's final score, people saved and best score,
+## above the failed round's own breakdown.
 func _show_results(total_survivors: int) -> void:
 	var ok := last_round_success
 	var tone := COL_OK if ok else COL_ALERT
-	lbl_result_title.text = "ROUND COMPLETE" if ok else "ROUND FAILED"
+	lbl_result_title.text = "ROUND COMPLETE" if ok else "GAME OVER"
 	lbl_result_title.add_theme_color_override("font_color", tone)
-	lbl_result_sub.text = "ROUND %d  |  %s" % [round_num, _difficulty_name().to_upper()]
+	lbl_result_sub.text = ("ROUND %d  |  %s" if ok else "REACHED ROUND %d  |  %s") % [round_num, _difficulty_name().to_upper()]
 	result_led.set_state(tone, true)
 	result_panel.add_theme_stylebox_override("panel", _style(Color(0.04, 0.07, 0.12, 0.97), tone, 14, 4, 0))
 	var banner := _style(Color("0f2c1f") if ok else Color("33100f"), tone, 10, 0, 14)
@@ -616,7 +760,8 @@ func _show_results(total_survivors: int) -> void:
 	banner.corner_radius_bottom_right = 0
 	result_banner.add_theme_stylebox_override("panel", banner)
 
-	lbl_result_saved.text = "%d / %d" % [scorer.delivered, total_survivors]
+	lbl_result_saved_title.text = "PEOPLE SAVED" if ok else "PEOPLE SAVED THIS RUN"
+	lbl_result_saved.text = "%d / %d" % [scorer.delivered, total_survivors] if ok else "%d" % run_saved
 	lbl_result_saved.add_theme_color_override("font_color", tone)
 	# Star rating: 3 = everyone saved, 2 = three quarters or more, 1 = cleared, 0 = failed.
 	var ratio := float(scorer.delivered) / float(maxi(total_survivors, 1))
@@ -634,13 +779,21 @@ func _show_results(total_survivors: int) -> void:
 		c.queue_free()
 	for row in scorer.breakdown():
 		_add_result_row(row[0], row[1], row[2])
-	lbl_result_total.text = "%+d" % scorer.total()
-	lbl_result_total.add_theme_color_override("font_color", COL_WARN if scorer.total() >= 0 else COL_ALERT)
 	if ok:
+		lbl_result_total_title.text = "ROUND SCORE"
+		lbl_result_total.text = "%+d" % scorer.total()
+		lbl_result_total.add_theme_color_override("font_color", COL_WARN if scorer.total() >= 0 else COL_ALERT)
 		lbl_result_note.text = "Total score: %d  -  the next round has a bigger city and more fires." % banked_score
+		lbl_result_note.add_theme_color_override("font_color", COL_DIM)
 		btn_next.text = "NEXT ROUND  >>"
 	else:
-		lbl_result_note.text = "Save at least half the people to pass. This round's points don't count."
+		lbl_result_total_title.text = "FINAL SCORE"
+		lbl_result_total.text = "%d" % banked_score
+		lbl_result_total.add_theme_color_override("font_color", COL_WARN)
+		var best := "NEW BEST!  Best score: %d (round %d)" % [best_score, best_round] if new_best \
+				else ("Best score: %d (round %d)" % [best_score, best_round] if best_score > 0 else "No best score yet")
+		lbl_result_note.text = "%s\nFewer than half got out. This round's %+d doesn't count. Try again from round 1." % [best, scorer.total()]
+		lbl_result_note.add_theme_color_override("font_color", COL_WARN if new_best else COL_DIM)
 		btn_next.text = "TRY AGAIN"
 	result_panel.visible = true
 	result_panel.modulate.a = 0.0
@@ -829,7 +982,8 @@ func _build_ui() -> void:
 	var saved_box := VBoxContainer.new()
 	saved_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	hero.add_child(saved_box)
-	saved_box.add_child(_label("PEOPLE SAVED", 11, COL_DIM))
+	lbl_result_saved_title = _label("PEOPLE SAVED", 11, COL_DIM)
+	saved_box.add_child(lbl_result_saved_title)
 	lbl_result_saved = UiWidgets.Lcd.new("0 / 0", 34, COL_OK)
 	saved_box.add_child(lbl_result_saved)
 	var rating_box := VBoxContainer.new()
@@ -863,7 +1017,8 @@ func _build_ui() -> void:
 	var total_h := HBoxContainer.new()
 	total_h.add_theme_constant_override("separation", 12)
 	body_box.add_child(total_h)
-	total_h.add_child(_label("ROUND SCORE", 16, COL_TEXT))
+	lbl_result_total_title = _label("ROUND SCORE", 16, COL_TEXT)
+	total_h.add_child(lbl_result_total_title)
 	var total_gap := Control.new()
 	total_gap.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	total_h.add_child(total_gap)
@@ -960,7 +1115,7 @@ func _build_ui() -> void:
 	legend.add_theme_constant_override("v_separation", 4)
 	help_box.add_child(legend)
 	var keys := _wrap_label(11, COL_DIM)
-	keys.text = "Keys: Enter dispatch, Z/Backspace undo, C clear, Tab next group, Esc deselect, V map style. Tap an earlier route tile to cut back to it."
+	keys.text = "Keys: Enter dispatch, Z/Backspace undo (STOP while a group moves), C clear, Tab next group, Esc deselect, V map style. Tap an earlier route tile to cut back to it."
 	help_box.add_child(keys)
 
 
