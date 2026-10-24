@@ -21,7 +21,7 @@ const GAMEPLAY_SCRIPTS := ["city_map.gd", "city_building.gd", "city_layout.gd", 
 const VISUAL_NAMES := ["VisualTheme", "MapPainter", "MapView", "CanvasItem", "Color(", "Color.", "Texture", "queue_redraw"]
 
 
-func _initialize() -> void:
+func _init() -> void:
 	for arg in OS.get_cmdline_user_args():
 		if arg.begins_with("--seeds="):
 			seeds_per_round = arg.substr(8).to_int()
@@ -205,6 +205,11 @@ func test_safe_zone_designation() -> void:
 	var refused := 0
 	for r in range(2, 10):
 		var m := MapGenerator.build_from_seed(r, 4400 + r)
+		# Safe-zone designation is a layout test; clear generated hazards so a
+		# random starting fire cannot invalidate the route assertion.
+		for fire in m.fires.keys():
+			m.remove_fire(fire)
+		m.smolders.clear()
 		var rng := RandomNumberGenerator.new()
 		rng.seed = r
 		var picks: Array[CityBuilding] = []
@@ -365,17 +370,7 @@ func test_render_styles() -> void:
 				break
 		if not m.smolders.is_empty():
 			break
-	var drainer: SurvivorGroup
-	for candidate in groups:
-		for d in CityMap.DIRS:
-			var fire_tile: Vector2i = candidate.tile + d
-			if m.can_burn(fire_tile) and not m.is_fire(fire_tile):
-				m.add_fire(fire_tile)
-				if m.is_smoke(candidate.tile):
-					drainer = candidate
-					break
-		if drainer != null:
-			break
+	var drainer := _make_render_drainer(m, groups)
 	if drainer != null:
 		drainer.smoke_drain = 2.0
 		drainer.smoke_timer = 1.2
@@ -426,6 +421,28 @@ func test_render_styles() -> void:
 	mv.queue_free()
 	await process_frame
 	print("  themes drawn: %s, plus a designated zone and a map without a plan" % [themes.keys()])
+
+
+func _make_render_drainer(m: CityMap, groups: Array[SurvivorGroup]) -> SurvivorGroup:
+	# This is a visual fixture, so place a waiting group on a known road pair
+	# instead of relying on a particular generated start having a road neighbour.
+	for candidate in groups:
+		if candidate.state == SurvivorGroup.State.MOVING:
+			continue
+		for y in m.height:
+			for x in m.width:
+				var p := Vector2i(x, y)
+				if m.get_tile(p) != CityMap.Tile.ROAD:
+					continue
+				for d in CityMap.DIRS:
+					var fire_tile: Vector2i = p + d
+					if not m.can_burn(fire_tile):
+						continue
+					m.add_fire(fire_tile)
+					if m.is_smoke(p):
+						candidate.tile = p
+						return candidate
+	return null
 
 
 ## Drives the real game with pointer events at the drawn tile centres: select

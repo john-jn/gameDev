@@ -520,7 +520,7 @@ static func draw_survivor(ci: CanvasItem, th: VisualTheme, font: Font, c: Vector
 		var bc := c + Vector2(rad * 0.9, -rad * 0.9)
 		var br := maxf(8.0, rad * 0.58)
 		ci.draw_circle(bc, br, UI_COLORS.BG_DARK)
-		ci.draw_circle(bc, br - 2.0, UI_COLORS.TEAM_A_COLOR if label == "A" else UI_COLORS.TEAM_B_COLOR)
+		ci.draw_circle(bc, br - 2.0, UI_COLORS.team_color(label))
 		var count_size := int(maxf(11.0, br * 1.4))
 		ci.draw_string_outline(font, Vector2(bc.x, bc.y + font.get_ascent(count_size) * 0.34),
 				str(count), HORIZONTAL_ALIGNMENT_CENTER, -1, count_size, 2, UI_COLORS.BG_DARK)

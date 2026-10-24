@@ -4,19 +4,20 @@ A top-down disaster evacuation puzzle. You are a remote rescue operator: you pla
 
 ## Run
 
-1. Open Godot 4.6 (or any 4.3+), click **Import**, and pick this folder's `project.godot`.
-2. Press **F5** (Run Project). The main scene is `res://scenes/main.tscn`.
+1. Open Godot 4.6+ (Godot 4.7.2 was used for today's validation), click **Import**, and pick this folder's `project.godot`.
+2. Press **F5** (Run Project). The main menu opens first; use **START GAME** or open **SETTINGS** to adjust volume.
 
-No plugins or external assets are used.
+No plugins or external runtime dependencies are required; project art and audio are included in the repository.
 
 ## How to play
 
-1. **Tap a yellow circle** (a survivor group; the badge is its head count).
+1. **Tap a team row or yellow circle** (a survivor group; the badge is its head count). The selected team stays highlighted while it is moving.
 2. **Tap or drag along adjacent road tiles** to the green **SAFE** zone. Valid next tiles are outlined. Tap an earlier route tile to cut the route back to it.
 3. Press **DISPATCH** (Enter). The group walks your route tile by tile.
 4. **The fire spreads.** Each round starts with a few fires. After a short grace period they creep along the roads, faster as the round goes on. A tile about to catch fire **smolders** (pulsing embers) for a moment first. New fires are also **reported** at random places during the round ("FIRE REPORTED"), smolder a little longer, then spread like the rest.
-5. **STOP.** While a group is moving and no group is selected for planning, the UNDO button becomes **STOP GROUP X** (Z/Backspace too). It stops the last group dispatched; click a moving group's row, or tap it on the map, to aim STOP at another one. A group between tiles walks back to the tile it last reached. Then draw a detour from where it stopped and dispatch again. A **FIRE AHEAD** banner warns when a moving group has fire or a smoldering tile on its route.
-6. When every group is safe or lost, the round ends. Pass it to continue with **Next Round**; fail it and the run is over (see *Runs and game over*).
+5. **STOP / DISPATCH / CLEAR.** The shared buttons are centered below **YOUR TEAMS**. STOP halts the selected moving group; DISPATCH sends the selected route; CLEAR removes the current planned route. Z/Backspace also stops a moving group or undoes the last route step.
+6. Open the in-game **SETTINGS** button for volume or **END GAME**. Main-menu settings do not show END GAME.
+7. When every group is safe or lost, review the complete score panel. A no-safe-route result can show **VIEW MAP**, **NEXT ROUND**, or **MAIN MENU**; the map view has **ROUND OPTIONS** to return to that result panel.
 
 What fire and smoke do:
 
@@ -24,7 +25,7 @@ What fire and smoke do:
 - **Round 2 onward:** a group on a burning tile is lost with everyone in it, and there is no automatic stop. You have to press STOP.
 - **Smoke** (road next to a fire) costs one survivor per smoke tile walked onto. A group **standing still** in smoke also loses one survivor every 2 s (4 s in round 1); an amber ring around the group counts down to the next loss.
 
-Keys: Enter dispatch, Z/Backspace undo (STOP while a group moves), C clear, Tab next group, Esc deselect, V map style (dispatch map / debug shapes).
+Keys: Enter/Space dispatch, Z/Backspace undo (STOP while a group moves), C clear, Tab next group, Esc deselect, V map style (dispatch map / debug shapes).
 
 ## Scoring
 
@@ -35,9 +36,9 @@ Keys: Enter dispatch, Z/Backspace undo (STOP while a group moves), C clear, Tab 
 | Planning speed | +80 − 4/s per first dispatch. The **PLAN CLOCK** runs from round start or the last dispatch |
 | Hazard response | +80 − 6/s per detour, timed from when the fire appeared or the group was stopped |
 | Casualty | −60 per survivor lost to smoke or fire |
-| Round clear | +50 × round, if at least half the survivors got out |
+| Round clear | +50 × round when the round succeeds |
 
-If fewer than half the survivors are saved, the round fails and its points are not banked.
+A normal round succeeds while deaths do not outnumber the survivors still alive. If no safe route remains, waiting or blocked groups are counted as trapped/lost first; **NEXT ROUND** is available only when people saved strictly outnumber people lost. Equal saved/lost numbers are game over.
 
 ## Runs and game over
 
@@ -45,12 +46,13 @@ Each play-through is a **run**, like classic Tetris: it starts at round 1 and la
 
 - A failed round shows **GAME OVER** with the final score (points banked from completed rounds), the round reached, the people saved during the run (the failed round included) and the best score. **NEW BEST!** appears when the run beat it.
 - **TRY AGAIN** starts a new run: round 1, score 0, new random maps.
+- **VIEW MAP** opens the final map, and **ROUND OPTIONS** returns to the result choices. **MAIN MENU** returns to the start screen.
 - The best score and the round it reached are saved on the device (`user://best_score.cfg`). A missing or broken file counts as no best yet and never stops the game.
 
 ## Progression
 
 - **Round 1:** a hand-authored training map with 2 groups, slow non-lethal fire and a 12 s grace period.
-- **Round 2 onward:** seeded Physarum layouts organized into uneven city blocks with side streets, cross-links and wider avenues. Maps get gradually wider, with more groups (up to 6), more road closures and more pre-placed fires. The fire spreads sooner and faster, and more fires are reported during the round.
+- **Round 2 onward:** seeded Physarum layouts organized into uneven city blocks with side streets, cross-links and wider avenues. Maps get gradually wider, with more groups (up to 5), more road closures and more pre-placed fires. The fire spreads sooner and faster, and more fires are reported during the round.
 
 Fire tuning per round (all in `HazardManager.setup()`; round 5 onward uses the round 5 row):
 
