@@ -1,0 +1,22 @@
+[gd_scene format=3 uid="uid://duptkbiofed2h"]
+
+[ext_resource type="Script" uid="uid://8tq18cnj2f1h" path="res://scripts/game.gd" id="1_game"]
+[ext_resource type="Resource" path="res://assets/art/dispatch_theme.tres" id="2_theme"]
+
+[node name="Main" type="Control" unique_id=1616657093]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("1_game")
+visual_theme_override = ExtResource("2_theme")
+
+[node name="AudioStreamPlayer" type="AudioStreamPlayer" parent="." unique_id=335945507]
+
+[node name="AudioStreamPlayer2" type="AudioStreamPlayer" parent="." unique_id=1820052498]
+bus = &"Music"
+
+[node name="AudioStreamPlayer3" type="AudioStreamPlayer" parent="." unique_id=601200518]
+bus = &"SFX"
