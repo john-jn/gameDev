@@ -10,7 +10,7 @@ var out_dir := "user://screenshots"
 var rounds: Array[int] = [1, 3, 6, 9]
 
 
-func _initialize() -> void:
+func _init() -> void:
 	for arg in OS.get_cmdline_user_args():
 		if arg.begins_with("--out="):
 			out_dir = arg.substr(6)

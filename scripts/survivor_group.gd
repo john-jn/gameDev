@@ -45,6 +45,18 @@ func can_plan() -> bool:
 	return state == State.WAITING or state == State.BLOCKED
 
 
+## Marks a waiting or blocked group as lost when no route to safety remains.
+## Returns the number of survivors trapped in the group.
+func mark_trapped() -> int:
+	if state != State.WAITING and state != State.BLOCKED:
+		return 0
+	var count := survivors
+	casualties += count
+	survivors = 0
+	state = State.LOST
+	return count
+
+
 func dispatch(route: Array[Vector2i]) -> void:
 	path = route.duplicate()
 	index = 0

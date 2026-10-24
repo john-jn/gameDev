@@ -9,7 +9,7 @@ extends RefCounted
 ##   Planning    +80 per first dispatch, -4 per second of planning (min 0)
 ##   Response    +80 per detour after a hazard, -6 per second of response (min 0)
 ##   Casualties  -60 per survivor lost in smoke
-##   Clear bonus +50 x round number if at least half the survivors got out
+##   Clear bonus +50 x round number when the round is not a loss
 
 const RESCUE_PER_SURVIVOR := 50
 const CASUALTY_PENALTY := 60
@@ -90,7 +90,7 @@ func breakdown() -> Array:
 		["Fast planning", "sent quickly", planning],
 		["Quick detours", "after a fire", response],
 		["People lost", "%d" % lost, casualty],
-		["Round bonus", "for clearing it" if clear_bonus > 0 else "save half to earn", clear_bonus],
+		["Round bonus", "for clearing it" if clear_bonus > 0 else "round lost", clear_bonus],
 	]
 
 

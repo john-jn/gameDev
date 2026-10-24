@@ -402,7 +402,7 @@ func _update_route_line() -> void:
 
 
 func _team_color(group: SurvivorGroup) -> Color:
-	return UI_COLORS.TEAM_A_COLOR if group.label == "A" else UI_COLORS.TEAM_B_COLOR
+	return UI_COLORS.team_color(group.label)
 
 
 func _marker_tile_at(pointer: Vector2) -> Vector2i:

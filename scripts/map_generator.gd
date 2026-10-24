@@ -143,7 +143,7 @@ static func build_handmade() -> CityMap:
 
 ## Difficulty knobs, all growing slowly with the round number.
 static func group_count_for(round_num: int) -> int:
-	return mini(2 + floori((round_num - 1) / 2.0), 6)
+	return mini(2 + floori((round_num - 1) / 2.0), 5)
 
 
 static func pre_fire_count_for(round_num: int) -> int:
