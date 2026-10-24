@@ -47,6 +47,7 @@ func _run() -> void:
 	await test_round_flow()
 	await test_no_safe_route_flow()
 	await test_best_score_file()
+	await test_main_menu()
 	print("\n==== %d checks, %d failures, %.1fs ====" % [checks, failures, (Time.get_ticks_msec() - t0) / 1000.0])
 	quit(1 if failures > 0 else 0)
 
@@ -1301,6 +1302,55 @@ func _setup_no_route_case(game: Control, saved: int, trapped: int) -> void:
 	game.round_over = false
 	game.last_round_success = false
 	game.result_panel.visible = false
+
+
+## The main menu draws its own dimmed backdrop city without starting a round.
+## START replaces it with a fresh round 1 and fades the menu out; settings keeps
+## END GAME and BACK tied to where it was opened; MAIN MENU brings the menu back.
+func test_main_menu() -> void:
+	print("\n[main menu] backdrop, start, settings, return")
+	_remove_user_file(TEST_BEST_PATH)
+	var game: Control = load("res://scenes/main.tscn").instantiate()
+	game.best_score_path = TEST_BEST_PATH
+	root.add_child(game)
+	await process_frame
+	var backdrop: CityMap = game.map_view.map
+	check(game.main_menu_overlay.visible and game.main_menu_card.visible, "the main menu should show at start-up")
+	check(game.map == null and backdrop != null and not backdrop.fires.is_empty(),
+			"the menu should draw a burning backdrop city without starting a round")
+	check(game.lbl_menu_best.text == "----", "no best score should read ---- (%s)" % game.lbl_menu_best.text)
+	game._show_settings_from_menu()
+	check(game.settings_panel.visible and not game.btn_end_game.visible, "END GAME must stay hidden in menu settings")
+	game._on_settings_back_pressed()
+	check(game.main_menu_card.visible and not game.settings_panel.visible and game.map_view.map == backdrop,
+			"BACK from menu settings should return to the same menu")
+	game._on_start_game_pressed()
+	check(game.game_started and game.round_num == 1 and game.map != null and game.map != backdrop,
+			"START should build a fresh round 1 map")
+	await process_frame
+	check(game.map_view.map == game.map and not game.round_over, "the round map should replace the backdrop")
+	await create_timer(0.5).timeout
+	check(not game.main_menu_overlay.visible, "the menu should fade out into the round")
+	game._show_settings_from_game()
+	check(game.main_menu_overlay.visible and game.main_menu_overlay.modulate.a == 1.0 and game.btn_end_game.visible
+			and not game.btn_end_game.disabled, "in-game settings should show an active END GAME")
+	game._on_settings_back_pressed()
+	check(not game.main_menu_overlay.visible and not game.round_over, "BACK from in-game settings should resume the round")
+	game._show_settings_from_game()
+	game._on_settings_end_game_pressed()
+	check(game.round_over and game.lbl_result_title.text == "GAME OVER", "END GAME should open the game-over panel")
+	game.best_score = 120
+	game.best_round = 3
+	game._on_main_menu_pressed()
+	await process_frame
+	check(game.main_menu_card.visible and game.map_view.map != game.map and game.map_view.map != null,
+			"MAIN MENU should show the menu over a new backdrop")
+	check(game.lbl_menu_best.text == "120" and game.lbl_menu_best_round.text == "ROUND 3",
+			"the menu LCD should show the best score (%s)" % game.lbl_menu_best.text)
+	print("  backdrop kept apart from the round; settings and menu routes intact")
+	game.queue_free()
+	await process_frame
+	_remove_user_file(TEST_BEST_PATH)
 
 
 func _remove_user_file(path: String) -> void:
