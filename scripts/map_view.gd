@@ -52,6 +52,9 @@ var alert_icon_texture: Texture2D
 ## Full smolder warning time, so embers pulse faster as ignition nears.
 var smolder_time := 2.0
 
+## Tiles a tutorial coach points at; drawn as pulsing brackets.
+var guide_tiles: Array[Vector2i] = []
+
 var _time := 0.0
 var _safe_breath := 0.0
 var _waiting_scale := 0.9
@@ -594,6 +597,13 @@ func _draw_overlay(ci: CanvasItem) -> void:
 			var k := clampf(g.smoke_timer / g.smoke_drain, 0.0, 1.0)
 			ci.draw_arc(c, ring, 0, TAU, 32, Color(th.smoke_drain_ring, 0.25), 3.0, true)
 			ci.draw_arc(c, ring, -PI * 0.5, -PI * 0.5 + TAU * k, 32, Color(th.smoke_drain_ring, 0.55 + 0.45 * pulse), 4.0, true)
+
+	# 7b. Tutorial guide: pulsing brackets on the tiles the coach points at.
+	for gt in guide_tiles:
+		if map.in_bounds(gt):
+			var gr := tile_rect(gt).grow(2.0 + 3.0 * pulse)
+			ci.draw_rect(gr, Color(UI_COLORS.ACCENT_TEAL, 0.14 + 0.12 * pulse))
+			ci.draw_rect(gr, UI_COLORS.ACCENT_TEAL, false, 3.0)
 
 	# 8. Floating popups.
 	for pp in _popups:

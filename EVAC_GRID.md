@@ -27,6 +27,14 @@ What fire and smoke do:
 
 Keys: Enter/Space dispatch, Z/Backspace undo (STOP while a group moves), C clear, Tab next group, Esc deselect, V map style (dispatch map / debug shapes).
 
+## Tutorial
+
+A guided practice round on the hand-authored training map, with no fire and no score. A coach card at the top of the side panel walks through select a team, draw a route, dispatch, watch it arrive, then the same for the second team. Pulsing brackets on the map and a pulsing DISPATCH button show where to act, and each step waits for the player to do it.
+
+- **Reach it:** the **TUTORIAL** button on the main menu, or the one-time "NEW HERE?" offer when a player with no saved best score presses START GAME. The offer is shown once; progress is stored in `user://tutorial.cfg`.
+- **Code:** `scripts/tutorial.gd` (state machine and coach card), small hooks in `game.gd` (`_start_tutorial`, `_exit_tutorial`, `tutorial.tick`), and `MapView.guide_tiles` for the highlights.
+- **Test:** `godot --headless --path . --script res://tests/test_tutorial.gd` plays the whole lesson through the real game scene.
+
 ## Scoring
 
 | Source | Points |
@@ -82,6 +90,7 @@ Fire tuning per round (all in `HazardManager.setup()`; round 5 onward uses the r
 | `scripts/route_validator.gd` | Route legality: start tile, contiguity, no fire or buildings, ends in SAFE |
 | `scripts/survivor_group.gd` | Group state machine, tile-by-tile movement, STOP, smoke and fire effects |
 | `scripts/hazard_manager.gd` | Fire per round: starting fires, spread with smolder warnings and the fairness rule, spot fires; all tuning in `setup()` |
+| `scripts/tutorial.gd` | Guided tutorial: step state machine, coach card, first-launch offer |
 | `scripts/score_keeper.gd` | Score buckets and the result breakdown |
 | `scripts/map_view.gd` | What is drawn where: static city layer, per-frame overlay layer, mouse and touch input |
 | `scripts/map_painter.gd` | How each map object looks: primitive painters for both styles, lot geometry, legend icons |

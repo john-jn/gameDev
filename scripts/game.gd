@@ -150,6 +150,8 @@ var _menu_map: CityMap  ## backdrop city while the main menu is up; null during 
 var _menu_time := 0.0
 var _menu_fade: Tween
 var game_started := false
+var tutorial := Tutorial.new()
+var side_box: VBoxContainer
 var settings_from_game := false
 var forced_game_over := false
 var focused_group: SurvivorGroup = null
@@ -174,6 +176,7 @@ func _ready() -> void:
 		elif arg == "--visual=dispatch":
 			visual_style = VisualTheme.Style.DISPATCH_STYLE
 	_build_ui()
+	tutorial.setup(self, side_box)
 	set_visual_style(visual_style)
 	_load_best_score()
 	_load_volume()
@@ -259,6 +262,11 @@ func _show_settings_from_game() -> void:
 
 
 func _on_start_game_pressed() -> void:
+	if tutorial.should_offer():
+		tutorial.show_offer()
+		return
+	if tutorial.active:
+		tutorial.finish_exit()
 	if game_started:
 		return  # a second click while the menu fades out
 	game_started = true
@@ -275,6 +283,30 @@ func _on_start_game_pressed() -> void:
 	_menu_fade.tween_callback(func() -> void: main_menu_overlay.visible = false)
 
 
+## Guided practice round on the training map: no fire, nothing scored or saved.
+func _start_tutorial() -> void:
+	_stop_menu_fade()
+	main_menu_overlay.visible = false
+	settings_panel.visible = false
+	game_started = true
+	round_num = 1
+	banked_score = 0
+	run_saved = 0
+	new_best = false
+	forced_game_over = false
+	tutorial.active = true
+	_start_round()
+	tutorial.begin()
+
+
+func _exit_tutorial() -> void:
+	tutorial.finish_exit()
+	game_started = false
+	selected = null
+	route.clear()
+	_show_main_menu()
+
+
 func _on_settings_back_pressed() -> void:
 	if settings_from_game:
 		main_menu_overlay.visible = false
@@ -284,6 +316,9 @@ func _on_settings_back_pressed() -> void:
 
 
 func _on_settings_end_game_pressed() -> void:
+	if tutorial.active:
+		_exit_tutorial()
+		return
 	if not game_started or round_over:
 		return
 	settings_from_game = false
@@ -332,6 +367,11 @@ func _start_round() -> void:
 		groups.append(SurvivorGroup.new(i, char(65 + i), map.survivor_starts[i], map.survivor_sizes[i]))
 	hazards = HazardManager.new()
 	hazards.setup(round_num, rng)
+	if tutorial.active:
+		# Practice round: no fire at all.
+		hazards.start_fires = 0
+		hazards.spot_fires = 0
+		hazards.grace = 1.0e9
 	for g in groups:
 		g.fire_lethal = hazards.fire_lethal
 		g.smoke_drain = hazards.smoke_drain
@@ -351,10 +391,13 @@ func _start_round() -> void:
 	no_route_return_button.visible = false
 	last_result_was_no_route = false
 	alert_panel.visible = false
-	_log("Round %d (%s): %d groups, %d fire(s) burning, spreading in %ds, %d more reported during the round%s." % [
-		round_num, _difficulty_name(), groups.size(), map.fires.size(), roundi(hazards.grace), hazards.spot_fires,
-		"" if hazards.fire_lethal else " (training: groups stop before fire)"])
-	if round_num == 1 and best_score > 0:
+	if tutorial.active:
+		_log("Tutorial: practice round with no fire and no score.")
+	else:
+		_log("Round %d (%s): %d groups, %d fire(s) burning, spreading in %ds, %d more reported during the round%s." % [
+			round_num, _difficulty_name(), groups.size(), map.fires.size(), roundi(hazards.grace), hazards.spot_fires,
+			"" if hazards.fire_lethal else " (training: groups stop before fire)"])
+	if round_num == 1 and best_score > 0 and not tutorial.active:
 		_log("New run. Best score to beat: %d (round %d)." % [best_score, best_round])
 	# MapGenerator.build_from_seed(round, seed) rebuilds this exact map.
 	print("Evac Grid round %d map: %s" % [round_num, map.gen_info])
@@ -379,6 +422,7 @@ func _process(delta: float) -> void:
 			map_view.popup(spot, "FIRE REPORTED", COL_WARN)
 			_log("FIRE REPORTED at (%d, %d) - it ignites in %.0fs." % [spot.x, spot.y, hazards.spot_warning])
 		_check_round_end()
+		tutorial.tick(delta)
 	_update_ui()
 
 
@@ -443,6 +487,8 @@ func _on_hazard(fire: Vector2i) -> void:
 
 
 func _check_round_end() -> void:
+	if tutorial.active:
+		return
 	if round_over:
 		return
 	# Game over is intentionally strict: deaths must outnumber all survivors
@@ -1020,8 +1066,8 @@ func _update_ui() -> void:
 	map_view.route_bad_index = validation.get("bad_index", -1)
 	map_view.route_complete = validation.get("complete", false)
 	map_view.smolder_time = hazards.smolder_time
-	map_view.alert_countdown = hazards.seconds_to_next_event if not round_over else 0.0
-	map_view.alert_progress = hazards.next_event_progress if not round_over else 0.0
+	map_view.alert_countdown = hazards.seconds_to_next_event if not round_over and not tutorial.active else 0.0
+	map_view.alert_progress = hazards.next_event_progress if not round_over and not tutorial.active else 0.0
 	map_view.route_eta_seconds = 0.0
 	if selected != null and selected.can_plan():
 		var plan_start := selected.blocked_since if selected.state == SurvivorGroup.State.BLOCKED else plan_clock_start
@@ -1472,6 +1518,7 @@ func _build_ui() -> void:
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	side.add_child(scroll)
 	var sv := VBoxContainer.new()
+	side_box = sv
 	sv.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	sv.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	sv.add_theme_constant_override("separation", 12)
@@ -1639,6 +1686,11 @@ func _build_ui() -> void:
 	btn_menu_start.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
 	_set_dispatch_button_styles(btn_menu_start)
 	menu_box.add_child(btn_menu_start)
+	var tutorial_button := _button("TUTORIAL", _start_tutorial)
+	tutorial_button.custom_minimum_size.y = 46
+	tutorial_button.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+	_set_secondary_button_styles(tutorial_button)
+	menu_box.add_child(tutorial_button)
 	var settings_button := _button("SETTINGS", _show_settings_from_menu)
 	settings_button.custom_minimum_size.y = 46
 	settings_button.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND

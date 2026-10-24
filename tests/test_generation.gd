@@ -1324,6 +1324,7 @@ func test_main_menu() -> void:
 	game._on_settings_back_pressed()
 	check(game.main_menu_card.visible and not game.settings_panel.visible and game.map_view.map == backdrop,
 			"BACK from menu settings should return to the same menu")
+	game.tutorial.seen = true  # a first-time player is offered the tutorial before the game starts
 	game._on_start_game_pressed()
 	check(game.game_started and game.round_num == 1 and game.map != null and game.map != backdrop,
 			"START should build a fresh round 1 map")
