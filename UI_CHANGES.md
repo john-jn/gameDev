@@ -96,6 +96,6 @@ Only the display text changed. Point formulas and constants are the same.
 
 ## Known leftovers
 
-- `UiWidgets.Screw` and `ScoreKeeper._times_text` are unused.
+- `ScoreKeeper._times_text` is unused.
 - `README.md` is still only a title. `EVAC_GRID.md` still describes the older side-panel wording in its "How to play" section.
 - Godot needs a one-time project import (`godot --headless --path . --import`) so the new `UiWidgets` class is registered. Opening the project in the editor does this.

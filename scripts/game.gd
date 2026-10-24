@@ -13,6 +13,7 @@ extends Control
 
 const UI_COLORS = preload("res://scripts/ui_colors.gd")
 const SETTINGS_PATH := "user://settings.cfg"
+const MENU_BACKDROP_ROUND := 3  ## round size of the city drawn behind the main menu
 
 var COL_PANEL := UI_COLORS.BG_PANEL
 var COL_PANEL_EDGE := UI_COLORS.TEAL
@@ -137,10 +138,17 @@ var btn_main_menu: Button
 var no_route_return_button: Button
 var main_menu_overlay: ColorRect
 var main_menu_card: PanelContainer
+var menu_standby_led: UiWidgets.Led
+var btn_menu_start: Button
+var lbl_menu_best: UiWidgets.Lcd
+var lbl_menu_best_round: Label
 var settings_panel: PanelContainer
 var btn_end_game: Button
 var volume_slider: HSlider
-var lbl_volume: Label
+var lbl_volume: UiWidgets.Lcd
+var _menu_map: CityMap  ## backdrop city while the main menu is up; null during play
+var _menu_time := 0.0
+var _menu_fade: Tween
 var game_started := false
 var settings_from_game := false
 var forced_game_over := false
@@ -177,13 +185,62 @@ func _ready() -> void:
 func _show_main_menu() -> void:
 	if main_menu_overlay == null:
 		return
+	_stop_menu_fade()
 	main_menu_overlay.visible = true
 	main_menu_card.visible = true
 	settings_panel.visible = false
 	settings_from_game = false
+	_show_menu_backdrop()
+	var has_best := best_score > 0
+	lbl_menu_best.text = "%d" % best_score if has_best else "----"
+	lbl_menu_best_round.text = "ROUND %d" % best_round if has_best else "NO RUNS YET"
+
+
+## Draws a dimmed city of its own behind the menu. Its waiting groups and
+## starting fires keep the map view animating; the round's map and rng are
+## left alone, so START still builds a fresh round 1.
+func _show_menu_backdrop() -> void:
+	if _menu_map == null:
+		var menu_rng := RandomNumberGenerator.new()
+		menu_rng.randomize()
+		_menu_map = MapGenerator.build_round(MENU_BACKDROP_ROUND, menu_rng)
+		var menu_groups: Array[SurvivorGroup] = []
+		for i in mini(_menu_map.survivor_starts.size(), 5):
+			menu_groups.append(SurvivorGroup.new(i, char(65 + i), _menu_map.survivor_starts[i], _menu_map.survivor_sizes[i]))
+		var menu_hazards := HazardManager.new()
+		menu_hazards.setup(MENU_BACKDROP_ROUND, menu_rng)
+		menu_hazards.place_starting_fires(_menu_map, menu_groups)
+		map_view.groups = menu_groups
+	var no_route: Array[Vector2i] = []
+	map_view.map = _menu_map
+	map_view.selected = null
+	map_view.route = no_route
+	map_view.alert_countdown = 0.0
+	map_view.alert_progress = 0.0
+	map_view.route_eta_seconds = 0.0
+	map_view.reset_effects()
+	map_frame.modulate = UI_COLORS.BUILDING_DIM
+
+
+## Standby LED blink and the START pulse (the old DISPATCH pulse).
+func _animate_menu(delta: float) -> void:
+	_menu_time += delta
+	menu_standby_led.lit = fmod(_menu_time, 1.2) < 0.6
+	if UI_COLORS.JUICE_ENABLED:
+		btn_menu_start.modulate = UiPalette.MINT.lerp(UiPalette.WHITE, 0.5 + 0.5 * sin(_menu_time * 6.0))
+	else:
+		btn_menu_start.modulate = UiPalette.WHITE
+
+
+func _stop_menu_fade() -> void:
+	if _menu_fade != null and _menu_fade.is_running():
+		_menu_fade.kill()
+	main_menu_overlay.modulate.a = 1.0
 
 
 func _show_settings_from_menu() -> void:
+	if game_started:
+		return  # the menu is already fading into a round
 	settings_from_game = false
 	main_menu_card.visible = false
 	settings_panel.visible = true
@@ -193,6 +250,7 @@ func _show_settings_from_menu() -> void:
 
 func _show_settings_from_game() -> void:
 	settings_from_game = true
+	_stop_menu_fade()
 	main_menu_overlay.visible = true
 	main_menu_card.visible = false
 	settings_panel.visible = true
@@ -201,7 +259,8 @@ func _show_settings_from_game() -> void:
 
 
 func _on_start_game_pressed() -> void:
-	main_menu_overlay.visible = false
+	if game_started:
+		return  # a second click while the menu fades out
 	game_started = true
 	round_num = 1
 	banked_score = 0
@@ -209,6 +268,11 @@ func _on_start_game_pressed() -> void:
 	new_best = false
 	forced_game_over = false
 	_start_round()
+	# Fade the menu out over the new round (0.3 s, like the results card).
+	_stop_menu_fade()
+	_menu_fade = create_tween()
+	_menu_fade.tween_property(main_menu_overlay, "modulate:a", 0.0, 0.3)
+	_menu_fade.tween_callback(func() -> void: main_menu_overlay.visible = false)
 
 
 func _on_settings_back_pressed() -> void:
@@ -237,7 +301,7 @@ func _load_volume() -> void:
 	_set_volume(volume)
 	if volume_slider != null:
 		volume_slider.value = volume
-		lbl_volume.text = "VOLUME  %d%%" % roundi(volume)
+		lbl_volume.text = "%d%%" % roundi(volume)
 
 
 func _set_volume(percent: float) -> void:
@@ -251,7 +315,7 @@ func _set_volume(percent: float) -> void:
 func _on_volume_changed(value: float) -> void:
 	_set_volume(value)
 	if lbl_volume != null:
-		lbl_volume.text = "VOLUME  %d%%" % roundi(value)
+		lbl_volume.text = "%d%%" % roundi(value)
 	var cfg := ConfigFile.new()
 	cfg.set_value("audio", "volume", value)
 	cfg.save(SETTINGS_PATH)
@@ -260,6 +324,8 @@ func _on_volume_changed(value: float) -> void:
 # --- Round flow -----------------------------------------------------------------
 
 func _start_round() -> void:
+	_menu_map = null  # the menu backdrop gives way to the round
+	map_frame.modulate = Color.WHITE
 	map = MapGenerator.build_round(round_num, rng)
 	groups.clear()
 	for i in mini(map.survivor_starts.size(), 5):
@@ -297,6 +363,9 @@ func _start_round() -> void:
 
 
 func _process(delta: float) -> void:
+	if _menu_map != null:
+		_animate_menu(delta)
+		return  # the backdrop city is only drawn; no round runs under the menu
 	if map == null:
 		return
 	if not round_over:
@@ -1525,86 +1594,93 @@ func _build_ui() -> void:
 	_juice_flash.z_index = 95
 	add_child(_juice_flash)
 
-	# Main menu overlay. The game scene is built underneath it so START GAME can
-	# enter the first round without changing scenes.
+	# Main menu overlay. The game scene is built underneath it so START can enter
+	# the first round without changing scenes; a dimmed backdrop city shows
+	# through (see _show_menu_backdrop). It sits under the scanlines (90) and
+	# the tablet frame (100).
 	main_menu_overlay = ColorRect.new()
 	main_menu_overlay.name = "MainMenuOverlay"
-	main_menu_overlay.color = Color(UiPalette.BG_DARK, 0.97)
+	main_menu_overlay.color = Color(UiPalette.BG_DARK, 0.55)
 	main_menu_overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
 	main_menu_overlay.mouse_filter = Control.MOUSE_FILTER_STOP
-	main_menu_overlay.z_index = 200
+	main_menu_overlay.z_index = 85
 	add_child(main_menu_overlay)
 
 	main_menu_card = PanelContainer.new()
-	main_menu_card.set_anchors_preset(Control.PRESET_CENTER)
-	main_menu_card.grow_horizontal = Control.GROW_DIRECTION_BOTH
-	main_menu_card.grow_vertical = Control.GROW_DIRECTION_BOTH
-	main_menu_card.custom_minimum_size = Vector2(430, 0)
-	main_menu_card.add_theme_stylebox_override("panel", _style(COL_PANEL, COL_PANEL_EDGE, 14, 2, 0))
-	main_menu_overlay.add_child(main_menu_card)
-	var menu_box := VBoxContainer.new()
-	menu_box.add_theme_constant_override("separation", 14)
-	main_menu_card.add_child(menu_box)
+	var menu_box := _setup_menu_card(main_menu_card)
+	menu_standby_led = _add_title_strip(menu_box, "DISPATCH UNIT", "STANDBY")
+	menu_standby_led.color = COL_WARN
 	var menu_logo := TextureRect.new()
 	menu_logo.texture = LOGO_TEXTURE
-	menu_logo.custom_minimum_size = Vector2(220, 66)
+	menu_logo.custom_minimum_size = Vector2(224, 68)  # exactly 2x the header art
 	menu_logo.expand_mode = TextureRect.EXPAND_KEEP_SIZE
 	menu_logo.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
 	menu_logo.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	menu_logo.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	menu_box.add_child(menu_logo)
-	var menu_title := _label("EVAC GRID", 28, COL_ACCENT)
-	menu_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	menu_box.add_child(menu_title)
 	var menu_subtitle := _wrap_label(13, COL_DIM)
 	menu_subtitle.text = "PLAN THE ROUTE. SAVE THE CITY."
 	menu_subtitle.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	menu_box.add_child(menu_subtitle)
-	var start_button := _button("START GAME", _on_start_game_pressed)
-	start_button.custom_minimum_size.y = 54
-	start_button.add_theme_font_size_override("font_size", 20)
-	_set_dispatch_button_styles(start_button)
-	menu_box.add_child(start_button)
+	var best_box := _add_module(menu_box, "BEST SCORE")
+	var best_row := HBoxContainer.new()
+	best_row.add_theme_constant_override("separation", 12)
+	best_box.add_child(best_row)
+	lbl_menu_best = UiWidgets.Lcd.new("----", 28, COL_WARN)
+	lbl_menu_best.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	best_row.add_child(lbl_menu_best)
+	lbl_menu_best_round = _label("", 12, COL_DIM)
+	lbl_menu_best_round.custom_minimum_size.x = 100
+	lbl_menu_best_round.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	best_row.add_child(lbl_menu_best_round)
+	btn_menu_start = _button("START DISPATCH", _on_start_game_pressed)
+	btn_menu_start.custom_minimum_size.y = 58
+	btn_menu_start.add_theme_font_size_override("font_size", 22)
+	btn_menu_start.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+	_set_dispatch_button_styles(btn_menu_start)
+	menu_box.add_child(btn_menu_start)
 	var settings_button := _button("SETTINGS", _show_settings_from_menu)
 	settings_button.custom_minimum_size.y = 46
+	settings_button.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
 	_set_secondary_button_styles(settings_button)
 	menu_box.add_child(settings_button)
 
 	settings_panel = PanelContainer.new()
-	settings_panel.set_anchors_preset(Control.PRESET_CENTER)
-	settings_panel.grow_horizontal = Control.GROW_DIRECTION_BOTH
-	settings_panel.grow_vertical = Control.GROW_DIRECTION_BOTH
-	settings_panel.custom_minimum_size = Vector2(430, 0)
-	settings_panel.add_theme_stylebox_override("panel", _style(COL_PANEL, COL_PANEL_EDGE, 14, 2, 0))
-	main_menu_overlay.add_child(settings_panel)
-	var settings_box := VBoxContainer.new()
-	settings_box.add_theme_constant_override("separation", 14)
-	settings_panel.add_child(settings_box)
-	settings_box.add_child(_label("SETTINGS", 26, COL_ACCENT))
-	lbl_volume = _label("VOLUME  100%", 16, COL_TEXT)
-	settings_box.add_child(lbl_volume)
+	var settings_box := _setup_menu_card(settings_panel)
+	_add_title_strip(settings_box, "SETTINGS", "CONFIG").set_state(COL_OK, true)
+	var volume_box := _add_module(settings_box, "MASTER VOLUME")
+	var volume_row := HBoxContainer.new()
+	volume_row.add_theme_constant_override("separation", 12)
+	volume_box.add_child(volume_row)
 	volume_slider = HSlider.new()
 	volume_slider.min_value = 0.0
 	volume_slider.max_value = 100.0
 	volume_slider.step = 1.0
 	volume_slider.value = 100.0
 	volume_slider.custom_minimum_size.y = 30
+	volume_slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	volume_slider.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	_set_slider_styles(volume_slider)
 	volume_slider.value_changed.connect(_on_volume_changed)
-	settings_box.add_child(volume_slider)
-	var settings_note := _wrap_label(12, COL_DIM)
-	settings_note.text = "Adjusts the master audio volume."
-	settings_box.add_child(settings_note)
+	volume_row.add_child(volume_slider)
+	lbl_volume = UiWidgets.Lcd.new("100%", 22, COL_ACCENT)
+	lbl_volume.custom_minimum_size.x = 92
+	volume_row.add_child(lbl_volume)
+	var settings_actions := HBoxContainer.new()
+	settings_actions.add_theme_constant_override("separation", 8)
+	settings_box.add_child(settings_actions)
 	btn_end_game = _button("END GAME", _on_settings_end_game_pressed)
-	btn_end_game.custom_minimum_size.y = 46
 	_set_secondary_button_styles(btn_end_game)
 	btn_end_game.add_theme_color_override("font_color", COL_ALERT)
 	btn_end_game.add_theme_color_override("font_hover_color", UiPalette.WHITE)
 	btn_end_game.visible = false
-	settings_box.add_child(btn_end_game)
 	var settings_back := _button("BACK", _on_settings_back_pressed)
-	settings_back.custom_minimum_size.y = 46
 	_set_secondary_button_styles(settings_back)
-	settings_box.add_child(settings_back)
+	for action_button in [btn_end_game, settings_back]:
+		action_button.custom_minimum_size.y = 46
+		action_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		action_button.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+		settings_actions.add_child(action_button)
 	settings_panel.visible = false
 
 
@@ -1618,6 +1694,75 @@ func _add_module(parent: Control, title: String) -> VBoxContainer:
 	frame.add_child(box)
 	box.add_child(_label(title, 14, COL_ACCENT))
 	return box
+
+
+## Turns `card` into a centred control-unit box on the menu overlay, framed
+## like the side panel with casing screws in its corners. Returns the box to fill.
+func _setup_menu_card(card: PanelContainer) -> VBoxContainer:
+	card.set_anchors_preset(Control.PRESET_CENTER)
+	card.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	card.grow_vertical = Control.GROW_DIRECTION_BOTH
+	card.custom_minimum_size = Vector2(440, 0)
+	card.add_theme_stylebox_override("panel", _style(COL_PANEL, COL_PANEL_EDGE, 6, 2, 0))
+	main_menu_overlay.add_child(card)
+	var margin := MarginContainer.new()
+	for side_name in ["left", "right", "top", "bottom"]:
+		margin.add_theme_constant_override("margin_" + side_name, 26)
+	card.add_child(margin)
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 14)
+	margin.add_child(box)
+	# The screws sit on a free layer so the card's container doesn't stretch them.
+	var screws := Control.new()
+	screws.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	card.add_child(screws)
+	for corner in [[Control.PRESET_TOP_LEFT, 0.4], [Control.PRESET_TOP_RIGHT, 2.2],
+			[Control.PRESET_BOTTOM_LEFT, 1.3], [Control.PRESET_BOTTOM_RIGHT, 2.9]]:
+		var screw := UiWidgets.Screw.new(corner[1])
+		screws.add_child(screw)
+		screw.set_anchors_and_offsets_preset(corner[0], Control.PRESET_MODE_KEEP_SIZE, 7)
+	return box
+
+
+## Header strip for a menu card: unit name on the left, status LED on the right.
+func _add_title_strip(parent: Control, title: String, status: String) -> UiWidgets.Led:
+	var strip := PanelContainer.new()
+	strip.add_theme_stylebox_override("panel",
+			_style(Color(UI_COLORS.ACCENT_TEAL, 0.08), UI_COLORS.TEAL_MID, 4, 1, 8))
+	parent.add_child(strip)
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 8)
+	strip.add_child(row)
+	row.add_child(_label(title, 14, COL_ACCENT))
+	var gap := Control.new()
+	gap.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	row.add_child(gap)
+	var led := UiWidgets.Led.new(14.0)
+	led.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	row.add_child(led)
+	row.add_child(_label(status, 11, COL_DIM))
+	return led
+
+
+## Palette fader: dark track, teal fill, mint cap.
+func _set_slider_styles(slider: HSlider) -> void:
+	slider.add_theme_stylebox_override("slider", _style(UI_COLORS.BG_DARK, UI_COLORS.TEAL, 3, 1, 4))
+	slider.add_theme_stylebox_override("grabber_area", _style(UI_COLORS.TEAL_MID, UI_COLORS.TEAL_MID, 3, 1, 4))
+	slider.add_theme_stylebox_override("grabber_area_highlight",
+			_style(UI_COLORS.ACCENT_TEAL, UI_COLORS.ACCENT_TEAL, 3, 1, 4))
+	slider.add_theme_stylebox_override("focus", StyleBoxEmpty.new())
+	slider.add_theme_icon_override("grabber", _slider_cap(UI_COLORS.MINT))
+	slider.add_theme_icon_override("grabber_highlight", _slider_cap(UI_COLORS.WHITE))
+	slider.add_theme_icon_override("grabber_disabled", _slider_cap(UI_COLORS.TEAL_MID))
+
+
+## A small fader cap built in memory, so the slider needs no art file.
+func _slider_cap(body: Color) -> ImageTexture:
+	var img := Image.create_empty(14, 24, false, Image.FORMAT_RGBA8)
+	img.fill(UI_COLORS.BG_DARK)
+	img.fill_rect(Rect2i(2, 2, 10, 20), body)
+	img.fill_rect(Rect2i(6, 5, 2, 14), UI_COLORS.BG_DARK)
+	return ImageTexture.create_from_image(img)
 
 
 func _style(bg_color: Color, edge: Color, radius: int, border: int, pad: int) -> StyleBoxFlat:
