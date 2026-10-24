@@ -76,19 +76,19 @@ Fires are timed hazards and begin arriving even if no group has been dispatched.
 | Fast planning | Up to +80 on the first dispatch, reduced over time |
 | Quick detours | Up to +80 after a fire, reduced over response time |
 | People lost | -60 per survivor lost to smoke |
-| Round bonus | +50 multiplied by the round number when at least half of all survivors escape |
+| Round bonus | +50 multiplied by the round number when the round is cleared |
 
-A round succeeds when at least half of the survivors reach safety. Successful rounds bank their points and advance the game. Failed rounds do not bank points and can be retried.
+A normal round ends successfully when groups finish and deaths do not outnumber the survivors still alive. If no safe route remains, waiting or blocked groups are counted as trapped/lost, and the next round is available only when saved people strictly outnumber lost people. Failed rounds do not bank points and can be retried.
 
 ## Progression
 
 - **Round 1 — Training:** A hand-authored map with two groups and a slower hazard schedule.
-- **Round 2 onward:** Seeded procedural city layouts with uneven blocks, side streets, cross-links, avenues, more groups, road closures, pre-existing fires, and faster hazards.
+- **Round 2 onward:** Seeded procedural city layouts with uneven blocks, side streets, cross-links, avenues, up to five teams, road closures, pre-existing fires, and faster hazards.
 - The number of timed fires increases up to six per round. Round 1 has three slower fires and approximately an 11–14 second grace period before the first timed fire.
 
 ## Visual presentation
 
-The default interface uses a dark dispatch-tablet style with a control-panel layout, digital displays, status LEDs, a route-planning panel, an operations log, and a results card. The game includes two map styles:
+The default interface uses a dark dispatch-tablet style with a control-panel layout, digital displays, status LEDs, team controls, an operations log, and full results cards. The game includes two map styles:
 
 - **Dispatch map:** Dark roads, centre dashes, avenue lane markings, building footprints, parks, closed-road markings, and hazard overlays.
 - **Debug shapes:** The original flat prototype style, useful for debugging map geometry.

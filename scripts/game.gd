@@ -12,6 +12,7 @@ extends Control
 ## handed to MapView and the legend; nothing else depends on it.
 
 const UI_COLORS = preload("res://scripts/ui_colors.gd")
+const SETTINGS_PATH := "user://settings.cfg"
 
 var COL_PANEL := UI_COLORS.BG_PANEL
 var COL_PANEL_EDGE := UI_COLORS.TEAL
@@ -25,7 +26,6 @@ var COL_OK := UI_COLORS.SUCCESS
 var COL_WARN := UI_COLORS.WARNING
 const LOG_LINES := 6
 const LOG_SHOWN := 3
-const MAX_STRIKES := 6
 const DIFFICULTY_NAMES := ["Training", "Easy", "Moderate", "Hard", "Severe", "Extreme"]
 const BUTTONS_SHEET := preload("res://assets/art/buttons_sheet.png")
 const LOGO_TEXTURE := preload("res://ui/logo_header_1x.png")
@@ -34,8 +34,6 @@ const ALERT_TEXTURE := preload("res://assets/art/alert_icon.png")
 const TABLET_FRAME_TEXTURE := preload("res://ui/tablet_frame_slim.png")
 const GROUP_A_TEXTURE := preload("res://ui/group_a_light.png")
 const GROUP_B_TEXTURE := preload("res://ui/group_b_light.png")
-const PEOPLE_LOST_EMPTY_TEXTURE := preload("res://ui/people_lost_empty.png")
-const PEOPLE_LOST_FILLED_TEXTURE := preload("res://ui/people_lost_filled.png")
 const UI_THEME := preload("res://ui_theme.tres")
 const SCANLINE_SHADER := preload("res://ui/scanline_overlay.gdshader")
 const ALERT_FLASH_SHADER := preload("res://ui/alert_flash.gdshader")
@@ -110,13 +108,12 @@ var lbl_log: RichTextLabel
 var group_box: VBoxContainer
 var group_icons: Array[TextureRect] = []
 var group_btns: Array[Button] = []
+var btn_team_stop: Button
+var btn_team_dispatch: Button
+var btn_team_clear: Button
 var route_led: UiWidgets.Led
-var strike_icons: Array[TextureRect] = []
 var help_box: VBoxContainer
 var alert_led: TextureRect
-var btn_dispatch: Button
-var btn_undo: Button
-var btn_clear: Button
 var alert_panel: PanelContainer
 var lbl_alert: Label
 var hint_panel: PanelContainer
@@ -135,6 +132,21 @@ var result_pips: HFlowContainer
 var result_grid: GridContainer
 var lbl_result_note: Label
 var btn_next: Button
+var btn_result_view_map: Button
+var btn_main_menu: Button
+var no_route_return_button: Button
+var main_menu_overlay: ColorRect
+var main_menu_card: PanelContainer
+var settings_panel: PanelContainer
+var btn_end_game: Button
+var volume_slider: HSlider
+var lbl_volume: Label
+var game_started := false
+var settings_from_game := false
+var forced_game_over := false
+var focused_group: SurvivorGroup = null
+var last_result_total := 0
+var last_result_was_no_route := false
 var first_successful_dispatch := false
 var _styled_selected: SurvivorGroup
 var lbl_score_popup: Label
@@ -156,7 +168,93 @@ func _ready() -> void:
 	_build_ui()
 	set_visual_style(visual_style)
 	_load_best_score()
+	_load_volume()
+	_show_main_menu()
+
+
+# --- Main menu and settings ------------------------------------------------------
+
+func _show_main_menu() -> void:
+	if main_menu_overlay == null:
+		return
+	main_menu_overlay.visible = true
+	main_menu_card.visible = true
+	settings_panel.visible = false
+	settings_from_game = false
+
+
+func _show_settings_from_menu() -> void:
+	settings_from_game = false
+	main_menu_card.visible = false
+	settings_panel.visible = true
+	btn_end_game.visible = false
+	btn_end_game.disabled = true
+
+
+func _show_settings_from_game() -> void:
+	settings_from_game = true
+	main_menu_overlay.visible = true
+	main_menu_card.visible = false
+	settings_panel.visible = true
+	btn_end_game.visible = true
+	btn_end_game.disabled = not game_started or round_over
+
+
+func _on_start_game_pressed() -> void:
+	main_menu_overlay.visible = false
+	game_started = true
+	round_num = 1
+	banked_score = 0
+	run_saved = 0
+	new_best = false
+	forced_game_over = false
 	_start_round()
+
+
+func _on_settings_back_pressed() -> void:
+	if settings_from_game:
+		main_menu_overlay.visible = false
+		settings_panel.visible = false
+	else:
+		_show_main_menu()
+
+
+func _on_settings_end_game_pressed() -> void:
+	if not game_started or round_over:
+		return
+	settings_from_game = false
+	main_menu_overlay.visible = false
+	settings_panel.visible = false
+	forced_game_over = true
+	_end_round(false)
+
+
+func _load_volume() -> void:
+	var volume := 100.0
+	var cfg := ConfigFile.new()
+	if cfg.load(SETTINGS_PATH) == OK:
+		volume = clampf(float(cfg.get_value("audio", "volume", volume)), 0.0, 100.0)
+	_set_volume(volume)
+	if volume_slider != null:
+		volume_slider.value = volume
+		lbl_volume.text = "VOLUME  %d%%" % roundi(volume)
+
+
+func _set_volume(percent: float) -> void:
+	var bus := AudioServer.get_bus_index("Master")
+	if bus < 0:
+		return
+	var linear := clampf(percent / 100.0, 0.0, 1.0)
+	AudioServer.set_bus_volume_db(bus, -80.0 if linear <= 0.001 else linear_to_db(linear))
+
+
+func _on_volume_changed(value: float) -> void:
+	_set_volume(value)
+	if lbl_volume != null:
+		lbl_volume.text = "VOLUME  %d%%" % roundi(value)
+	var cfg := ConfigFile.new()
+	cfg.set_value("audio", "volume", value)
+	cfg.save(SETTINGS_PATH)
 
 
 # --- Round flow -----------------------------------------------------------------
@@ -164,7 +262,7 @@ func _ready() -> void:
 func _start_round() -> void:
 	map = MapGenerator.build_round(round_num, rng)
 	groups.clear()
-	for i in map.survivor_starts.size():
+	for i in mini(map.survivor_starts.size(), 5):
 		groups.append(SurvivorGroup.new(i, char(65 + i), map.survivor_starts[i], map.survivor_sizes[i]))
 	hazards = HazardManager.new()
 	hazards.setup(round_num, rng)
@@ -174,6 +272,7 @@ func _start_round() -> void:
 	hazards.place_starting_fires(map, groups)
 	scorer = ScoreKeeper.new()
 	selected = null
+	focused_group = null
 	stop_target = null
 	route.clear()
 	round_time = 0.0
@@ -183,6 +282,8 @@ func _start_round() -> void:
 	map_view.reset_effects()
 	_build_group_rows()
 	result_panel.visible = false
+	no_route_return_button.visible = false
+	last_result_was_no_route = false
 	alert_panel.visible = false
 	_log("Round %d (%s): %d groups, %d fire(s) burning, spreading in %ds, %d more reported during the round%s." % [
 		round_num, _difficulty_name(), groups.size(), map.fires.size(), roundi(hazards.grace), hazards.spot_fires,
@@ -228,7 +329,7 @@ func _on_group_event(g: SurvivorGroup, ev: Dictionary) -> void:
 			var pts := scorer.record_casualty()
 			map_view.popup(tile, "-1 survivor (%d)" % pts, COL_ALERT)
 			_show_score_popup(pts)
-			_play_loss_feedback(scorer.lost - 1)
+			_trigger_juice_alert()
 			_log("Group %s lost a survivor in smoke (%d)." % [g.label, pts])
 		"delivered":
 			var res := scorer.record_delivery(g)
@@ -246,8 +347,7 @@ func _on_group_event(g: SurvivorGroup, ev: Dictionary) -> void:
 					pts += scorer.record_casualty()
 				map_view.popup(tile, "-%d survivors (%d)" % [count, pts], COL_ALERT)
 				_show_score_popup(pts)
-				for i in count:
-					_play_loss_feedback(scorer.lost - count + i)
+				_trigger_juice_alert()
 				_log("Group %s was caught by the fire: %d lost (%d)." % [g.label, count, pts])
 			else:
 				_log("Group %s was lost in the smoke." % g.label)
@@ -274,15 +374,66 @@ func _on_hazard(fire: Vector2i) -> void:
 
 
 func _check_round_end() -> void:
+	if round_over:
+		return
+	# Game over is intentionally strict: deaths must outnumber all survivors
+	# still alive in the round. A single lost group does not end the run.
+	if _losses_outnumber_survivors():
+		_end_round(false)
+		return
 	for g in groups:
 		if g.is_active():
+			if _no_safe_route_remaining():
+				_mark_trapped_groups_lost()
+				# A no-route ending may continue only when more people were saved
+				# than lost. Equal saved/lost numbers are still a game over.
+				_end_round(scorer.delivered > scorer.lost, true)
 			return
-	round_over = true
-	var total_survivors := 0
+	_end_round(true)
+
+
+func _total_people() -> int:
+	var total := 0
 	for g in groups:
-		total_survivors += g.initial_survivors
-	# A round succeeds when at least half of all survivors reach safety.
-	last_round_success = scorer.delivered * 2 >= total_survivors
+		total += g.initial_survivors
+	return total
+
+
+func _losses_outnumber_survivors() -> bool:
+	var alive := _total_people() - scorer.lost
+	return scorer.lost > alive
+
+
+func _mark_trapped_groups_lost() -> void:
+	for g in groups:
+		var count := g.mark_trapped()
+		if count <= 0:
+			continue
+		for i in count:
+			scorer.record_casualty()
+		map_view.popup(g.tile, "-%d TRAPPED" % count, COL_ALERT)
+		_log("Group %s was trapped with no safe route: %d lost." % [g.label, count])
+	_trigger_juice_alert()
+
+
+func _no_safe_route_remaining() -> bool:
+	var has_waiting_group := false
+	for g in groups:
+		if g.state == SurvivorGroup.State.MOVING:
+			return false
+		if g.state == SurvivorGroup.State.WAITING or g.state == SurvivorGroup.State.BLOCKED:
+			has_waiting_group = true
+			if map.has_path(g.tile):
+				return false
+	return has_waiting_group
+
+
+func _end_round(success: bool, no_route: bool = false) -> void:
+	round_over = true
+	last_round_success = success
+	var total_survivors := _total_people()
+	last_result_total = total_survivors
+	last_result_was_no_route = no_route
 	scorer.finish_round(last_round_success, round_num)
 	run_saved += scorer.delivered
 	if last_round_success:
@@ -296,10 +447,12 @@ func _check_round_end() -> void:
 			_save_best_score()
 	selected = null
 	route.clear()
-	_show_results(total_survivors)
+	_show_results(total_survivors, last_result_was_no_route)
 
 
 func _on_next_pressed() -> void:
+	no_route_return_button.visible = false
+	result_panel.visible = false
 	if last_round_success:
 		round_num += 1
 	else:
@@ -354,11 +507,17 @@ func _on_tile_pressed(p: Vector2i) -> void:
 	if selected == null:
 		var mover := _moving_group_at(p)
 		if mover != null:
+			focused_group = mover
 			stop_target = mover
+			_apply_team_button_styles()
 			_notify("Group %s is en route. Press STOP to halt it." % mover.label, COL_DIM)
 		else:
 			map_view.flash_invalid(p)
 			_notify("Select a survivor group first (green markers).", COL_WARN)
+		return
+	if selected != null and selected.state == SurvivorGroup.State.MOVING:
+		stop_target = selected
+		_notify("Group %s is en route. Press STOP to halt it." % selected.label, COL_DIM)
 		return
 	var idx := route.find(p)
 	if idx != -1:
@@ -419,6 +578,8 @@ func _select_group(g: SurvivorGroup) -> void:
 	if g == null or not g.can_plan():
 		return
 	selected = g
+	focused_group = g
+	_apply_team_button_styles()
 	route.clear()
 	route.append(g.tile)
 	_notify("Group %s selected. Tap or drag along adjacent roads to the SAFE zone." % g.label, COL_ACCENT)
@@ -427,7 +588,7 @@ func _select_group(g: SurvivorGroup) -> void:
 func _dispatch() -> void:
 	if round_over:
 		return
-	if selected == null:
+	if selected == null or not selected.can_plan():
 		_notify("No group selected.", COL_WARN)
 		return
 	var v := RouteValidator.validate(map, route, selected.tile)
@@ -445,6 +606,7 @@ func _dispatch() -> void:
 	_log("%s for Group %s: %d tiles (shortest %d), %.1fs -> +%d %s." % [
 		kind, selected.label, route.size() - 1, shortest, secs, pts, "response" if is_reroute else "planning"])
 	map_view.popup(selected.tile, "+%d" % pts, COL_ACCENT)
+	focused_group = selected
 	stop_target = selected
 	selected.dispatch(route)
 	first_successful_dispatch = true
@@ -461,9 +623,10 @@ func _dispatch() -> void:
 
 ## UNDO while a route is being planned; STOP for a moving group otherwise.
 func _undo() -> void:
-	if selected == null:
+	if selected == null or not selected.can_plan():
 		var g := _stop_candidate()
 		if g != null:
+			focused_group = g
 			g.stop(round_time)
 			_log("STOP: Group %s halting." % g.label)
 			_notify("Group %s stopping. Draw a detour from where it halts, then DISPATCH." % g.label, COL_WARN)
@@ -473,7 +636,7 @@ func _undo() -> void:
 
 
 func _clear_route() -> void:
-	if selected != null:
+	if selected != null and selected.can_plan():
 		route.clear()
 		route.append(selected.tile)
 
@@ -541,6 +704,8 @@ func _first_group_in_state(s: int) -> SurvivorGroup:
 ## The moving group STOP would halt: the last one dispatched or tapped, else
 ## any moving group that is not already stopping.
 func _stop_candidate() -> SurvivorGroup:
+	if selected != null and selected.state == SurvivorGroup.State.MOVING and not selected.halt_requested:
+		return selected
 	if stop_target != null and stop_target.state == SurvivorGroup.State.MOVING and not stop_target.halt_requested:
 		return stop_target
 	for g in groups:
@@ -594,9 +759,10 @@ func _build_group_rows() -> void:
 	for g in groups:
 		var row := HBoxContainer.new()
 		row.add_theme_constant_override("separation", 8)
+		row.custom_minimum_size.y = 50
 		var icon := TextureRect.new()
 		icon.texture = GROUP_A_TEXTURE if g.label == "A" else GROUP_B_TEXTURE
-		icon.custom_minimum_size = Vector2(24, 24)
+		icon.custom_minimum_size = Vector2(32, 32)
 		icon.expand_mode = TextureRect.EXPAND_KEEP_SIZE
 		icon.stretch_mode = TextureRect.STRETCH_KEEP
 		icon.size_flags_vertical = Control.SIZE_SHRINK_CENTER
@@ -605,7 +771,10 @@ func _build_group_rows() -> void:
 		var b := _button("", _on_group_row_pressed.bind(g))
 		b.alignment = HORIZONTAL_ALIGNMENT_LEFT
 		b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		b.add_theme_font_size_override("font_size", 14)
+		b.custom_minimum_size.y = 46
+		b.add_theme_font_size_override("font_size", 16)
+		b.tooltip_text = "Select Group %s to plan or stop its evacuation." % g.label
+		b.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
 		row.add_child(b)
 		group_box.add_child(row)
 		group_icons.append(icon)
@@ -616,14 +785,34 @@ func _build_group_rows() -> void:
 func _on_group_row_pressed(g: SurvivorGroup) -> void:
 	if round_over:
 		return
+	focused_group = g
 	if g.state == SurvivorGroup.State.MOVING:
-		# A moving group can't be planned for; picking it aims the STOP button.
-		selected = null
+		# Keep the moving group selected so both the row and map marker remain highlighted.
+		selected = g
 		route.clear()
 		stop_target = g
+		_apply_team_button_styles()
 		_notify("Group %s is en route. Press STOP to halt it." % g.label, COL_DIM)
 		return
 	_select_group(g)
+
+
+func _on_team_stop_pressed() -> void:
+	if round_over:
+		return
+	_undo()
+
+
+func _on_team_dispatch_pressed() -> void:
+	if round_over:
+		return
+	_dispatch()
+
+
+func _on_team_clear_pressed() -> void:
+	if round_over:
+		return
+	_clear_route()
 
 
 func _log(text: String) -> void:
@@ -649,19 +838,6 @@ func _refresh_ops_log() -> void:
 		var color_code := Color(color, lerpf(0.42, 1.0, age)).to_html(true)
 		var escaped_line := line.replace("[", "[lb]").replace("]", "[rb]")
 		lbl_log.append_text("[color=#%s]%s[/color]\n" % [color_code, escaped_line])
-
-
-func _play_loss_feedback(index: int) -> void:
-	if index < 0 or index >= strike_icons.size():
-		return
-	var icon := strike_icons[index]
-	icon.pivot_offset = icon.size * 0.5
-	var tween := create_tween()
-	tween.tween_property(icon, "rotation", -0.12, 0.06)
-	tween.tween_property(icon, "rotation", 0.12, 0.06)
-	tween.tween_property(icon, "rotation", -0.08, 0.05)
-	tween.tween_property(icon, "rotation", 0.0, 0.06)
-	_trigger_juice_alert()
 
 
 func _trigger_juice_alert() -> void:
@@ -702,15 +878,15 @@ func _show_score_popup(points: int) -> void:
 
 
 func _team_color_for_group(group: SurvivorGroup) -> Color:
-	return UI_COLORS.TEAM_A_COLOR if group.label == "A" else UI_COLORS.TEAM_B_COLOR
+	return UI_COLORS.team_color(group.label)
 
 
 func _apply_team_button_styles() -> void:
 	for i in group_btns.size():
 		var button := group_btns[i]
 		var group := groups[i]
-		var color := UI_COLORS.TEAM_A_COLOR if group.label == "A" else UI_COLORS.TEAM_B_COLOR
-		var is_selected := group == selected
+		var color := UI_COLORS.team_color(group.label)
+		var is_selected := group == selected or group == focused_group
 		button.modulate = Color.WHITE if is_selected else Color(UI_COLORS.WHITE, 0.72)
 		group_icons[i].modulate = Color(color, 1.0 if is_selected else 0.72)
 		var normal := _flat_button_style(
@@ -724,7 +900,7 @@ func _apply_team_button_styles() -> void:
 		button.add_theme_stylebox_override("hover", hover)
 		button.add_theme_stylebox_override("pressed", pressed)
 		button.add_theme_stylebox_override("disabled", disabled)
-	_styled_selected = selected
+	_styled_selected = focused_group
 
 
 func _notify(text: String, color: Color) -> void:
@@ -766,7 +942,7 @@ func set_visual_style(s: VisualTheme.Style) -> void:
 
 func _update_ui() -> void:
 	validation = {}
-	if selected != null:
+	if selected != null and selected.can_plan():
 		validation = RouteValidator.validate(map, route, selected.tile)
 	map_view.map = map
 	map_view.groups = groups
@@ -778,7 +954,7 @@ func _update_ui() -> void:
 	map_view.alert_countdown = hazards.seconds_to_next_event if not round_over else 0.0
 	map_view.alert_progress = hazards.next_event_progress if not round_over else 0.0
 	map_view.route_eta_seconds = 0.0
-	if selected != null:
+	if selected != null and selected.can_plan():
 		var plan_start := selected.blocked_since if selected.state == SurvivorGroup.State.BLOCKED else plan_clock_start
 		map_view.route_eta_seconds = maxf(0.0, round_time - plan_start)
 
@@ -805,24 +981,30 @@ func _update_ui() -> void:
 	for i in groups.size():
 		var g := groups[i]
 		var blink_off := g.state == SurvivorGroup.State.BLOCKED and fmod(round_time, 0.6) > 0.3
-		var icon_color := UI_COLORS.TEAM_A_COLOR if g.label == "A" else UI_COLORS.TEAM_B_COLOR
-		var opacity := 0.25 if g.state == SurvivorGroup.State.LOST or blink_off else (1.0 if g == selected else 0.72)
+		var icon_color := UI_COLORS.team_color(g.label)
+		var is_focused := g == selected or g == focused_group
+		var opacity := 0.25 if g.state == SurvivorGroup.State.LOST or blink_off else (1.0 if is_focused else 0.72)
 		group_icons[i].modulate = Color(icon_color, opacity)
 		group_btns[i].text = "%sGroup %s   %d/%d people   %s" % [
-			"> " if g == selected else "", g.label, g.survivors, g.initial_survivors, _state_text(g)]
+			"> " if is_focused else "", g.label, g.survivors, g.initial_survivors, _state_text(g)]
 		group_btns[i].disabled = g.state == SurvivorGroup.State.DELIVERED or g.state == SurvivorGroup.State.LOST
-	for i in strike_icons.size():
-		strike_icons[i].texture = PEOPLE_LOST_FILLED_TEXTURE if i < scorer.lost else PEOPLE_LOST_EMPTY_TEXTURE
-		strike_icons[i].modulate = UI_COLORS.DANGER if i < scorer.lost else UI_COLORS.TEXT_SECONDARY
-	if selected != _styled_selected:
+	if focused_group != _styled_selected:
 		_apply_team_button_styles()
 
 	# Route module: one LED, one short line
 	var can_dispatch := false
 	var route_color := COL_DIM
 	var route_lit := false
-	if selected == null:
-		lbl_route.text = "No team selected"
+	var route_group: SurvivorGroup = selected
+	if route_group == null and focused_group != null and focused_group.state == SurvivorGroup.State.MOVING:
+		route_group = focused_group
+	if selected == null or not selected.can_plan():
+		if route_group != null:
+			route_color = _team_color_for_group(route_group)
+			route_lit = true
+			lbl_route.text = "Group %s is moving. Press STOP." % route_group.label
+		else:
+			lbl_route.text = "No team selected"
 	else:
 		var length: int = validation["length"]
 		var shortest := map.shortest_length(selected.tile)
@@ -839,20 +1021,16 @@ func _update_ui() -> void:
 			lbl_route.text = "Keep going to the SAFE zone  (%d tiles)" % length
 		if validation["smoke"] > 0:
 			lbl_route.text += "\nSmoke x%d = -%d people" % [validation["smoke"], validation["smoke"]]
-	route_led.set_state(_team_color_for_group(selected) if selected != null else route_color, route_lit)
-	btn_dispatch.disabled = not can_dispatch
-	btn_dispatch.modulate = UiPalette.MINT.lerp(UiPalette.WHITE, 0.5 + 0.5 * sin(round_time * 6.0)) if can_dispatch else UiPalette.WHITE
+	route_led.set_state(_team_color_for_group(route_group) if route_group != null else route_color, route_lit)
 	if selected != null and selected.state == SurvivorGroup.State.BLOCKED:
-		btn_dispatch.text = "DISPATCH DETOUR"
-	elif selected != null:
-		btn_dispatch.text = "DISPATCH GROUP %s" % selected.label
-	else:
-		btn_dispatch.text = "DISPATCH"
+		lbl_route.text = "Detour ready" if can_dispatch else lbl_route.text
 	var stop_candidate := _stop_candidate()
-	btn_undo.text = "STOP" if selected == null and stop_candidate != null else "UNDO"
-	btn_undo.disabled = (selected == null and stop_candidate == null) \
-			or (selected != null and route.size() <= 1)
-	btn_clear.disabled = selected == null or route.size() <= 1
+	btn_team_stop.disabled = stop_candidate == null
+	btn_team_dispatch.disabled = selected == null or not can_dispatch
+	btn_team_clear.disabled = selected == null or not selected.can_plan() or route.size() <= 1
+	btn_team_stop.tooltip_text = "Stop Group %s." % stop_candidate.label if stop_candidate != null else "Select a moving group to stop it."
+	btn_team_dispatch.tooltip_text = "Dispatch the selected group along the planned route." if can_dispatch else "Select a group and draw a complete route to the SAFE zone."
+	btn_team_clear.tooltip_text = "Clear the current route for the selected group."
 
 	# Hazard alert banner: fire ahead of a moving group first, then halted groups.
 	var danger := _group_heading_into_fire()
@@ -875,13 +1053,12 @@ func _update_ui() -> void:
 		alert_panel.modulate.a = 0.85 + 0.15 * sin(round_time * 8.0)
 
 
-## Round result panel. A failed round ends the run, so the same panel then
-## shows GAME OVER with the run's final score, people saved and best score,
-## above the failed round's own breakdown.
-func _show_results(total_survivors: int) -> void:
+## Round result panel. It is also used for the no-route decision so every
+## ending shows the same full score breakdown.
+func _show_results(total_survivors: int, no_route: bool = false) -> void:
 	var ok := last_round_success
-	var tone := COL_OK if ok else COL_ALERT
-	lbl_result_title.text = "ROUND COMPLETE" if ok else "GAME OVER"
+	var tone := COL_WARN if no_route else (COL_OK if ok else COL_ALERT)
+	lbl_result_title.text = "NO SAFE ROUTE" if no_route and ok else ("ROUND COMPLETE" if ok else "GAME OVER")
 	lbl_result_title.add_theme_color_override("font_color", tone)
 	lbl_result_sub.text = ("ROUND %d  |  %s" if ok else "REACHED ROUND %d  |  %s") % [round_num, _difficulty_name().to_upper()]
 	result_led.set_state(tone, true)
@@ -914,7 +1091,10 @@ func _show_results(total_survivors: int) -> void:
 		lbl_result_total_title.text = "ROUND SCORE"
 		lbl_result_total.text = "%+d" % scorer.total()
 		lbl_result_total.add_theme_color_override("font_color", COL_WARN if scorer.total() >= 0 else COL_ALERT)
-		lbl_result_note.text = "Total score: %d  -  the next round has a bigger city and more fires." % banked_score
+		if no_route:
+			lbl_result_note.text = "No safe route remains. View the map, or continue to the next round."
+		else:
+			lbl_result_note.text = "Total score: %d  -  the next round has a bigger city and more fires." % banked_score
 		lbl_result_note.add_theme_color_override("font_color", COL_DIM)
 		btn_next.text = "NEXT ROUND  >>"
 	else:
@@ -923,12 +1103,44 @@ func _show_results(total_survivors: int) -> void:
 		lbl_result_total.add_theme_color_override("font_color", COL_WARN)
 		var best := "NEW BEST!  Best score: %d (round %d)" % [best_score, best_round] if new_best \
 				else ("Best score: %d (round %d)" % [best_score, best_round] if best_score > 0 else "No best score yet")
-		lbl_result_note.text = "%s\nFewer than half got out. This round's %+d doesn't count. Try again from round 1." % [best, scorer.total()]
+		var failure_note := "Run ended from Settings. Start a new run from the main menu." if forced_game_over \
+				else ("No safe route remains. More people must be saved than lost to continue. Game over." if no_route \
+				else "More people were lost than reached safety. This round's %+d doesn't count. Try again from round 1." % scorer.total())
+		lbl_result_note.text = "%s\n%s" % [best, failure_note]
 		lbl_result_note.add_theme_color_override("font_color", COL_WARN if new_best else COL_DIM)
 		btn_next.text = "TRY AGAIN"
+	btn_result_view_map.visible = no_route
+	btn_main_menu.visible = true
 	result_panel.visible = true
 	result_panel.modulate.a = 0.0
 	create_tween().tween_property(result_panel, "modulate:a", 1.0, 0.3)
+
+
+func _show_no_route_prompt() -> void:
+	_show_results(last_result_total, true)
+	no_route_return_button.visible = false
+
+
+func _on_no_route_view_pressed() -> void:
+	result_panel.visible = false
+	no_route_return_button.visible = true
+	_notify("No safe route remains. The round is paused so you can review the map.", COL_WARN)
+
+
+func _on_no_route_return_pressed() -> void:
+	no_route_return_button.visible = false
+	_show_no_route_prompt()
+
+
+func _on_no_route_next_pressed() -> void:
+	_on_next_pressed()
+
+
+func _on_main_menu_pressed() -> void:
+	result_panel.visible = false
+	no_route_return_button.visible = false
+	game_started = false
+	_show_main_menu()
 
 
 func _add_result_row(title: String, detail: String, pts: int) -> void:
@@ -1156,12 +1368,31 @@ func _build_ui() -> void:
 	lbl_result_note = _label("", 13, COL_DIM)
 	lbl_result_note.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	body_box.add_child(lbl_result_note)
+	var result_actions := HBoxContainer.new()
+	result_actions.add_theme_constant_override("separation", 8)
+	body_box.add_child(result_actions)
 	btn_next = _button("NEXT ROUND  >>", _on_next_pressed)
-	btn_next.custom_minimum_size.y = 52
-	_set_button_art(btn_next)
-	body_box.add_child(btn_next)
+	btn_result_view_map = _button("VIEW MAP", _on_no_route_view_pressed)
+	btn_main_menu = _button("MAIN MENU", _on_main_menu_pressed)
+	for result_button in [btn_next, btn_result_view_map, btn_main_menu]:
+		result_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		result_button.custom_minimum_size.y = 52
+		_set_secondary_button_styles(result_button)
+		result_actions.add_child(result_button)
+	btn_result_view_map.visible = false
 	result_panel.visible = false
 	map_area.add_child(result_panel)
+
+	no_route_return_button = _button("ROUND OPTIONS", _on_no_route_return_pressed)
+	no_route_return_button.set_anchors_preset(Control.PRESET_CENTER_BOTTOM)
+	no_route_return_button.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	no_route_return_button.offset_top = -62
+	no_route_return_button.offset_bottom = -14
+	no_route_return_button.custom_minimum_size = Vector2(220, 48)
+	no_route_return_button.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+	_set_secondary_button_styles(no_route_return_button)
+	no_route_return_button.visible = false
+	map_area.add_child(no_route_return_button)
 
 	# Side panel: stacked control-unit modules
 	var side := PanelContainer.new()
@@ -1173,63 +1404,51 @@ func _build_ui() -> void:
 	side.add_child(scroll)
 	var sv := VBoxContainer.new()
 	sv.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	sv.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	sv.add_theme_constant_override("separation", 12)
 	scroll.add_child(sv)
 
 	var mg := _add_module(sv, "YOUR TEAMS")
+	mg.add_theme_constant_override("separation", 10)
 	group_box = VBoxContainer.new()
 	group_box.add_theme_constant_override("separation", 4)
+	group_box.custom_minimum_size.y = 118
 	mg.add_child(group_box)
+	var team_hint := _wrap_label(11, COL_DIM)
+	team_hint.text = "CLICK A GROUP TO SELECT IT"
+	team_hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	mg.add_child(team_hint)
+	var team_actions := HBoxContainer.new()
+	team_actions.alignment = BoxContainer.ALIGNMENT_CENTER
+	team_actions.add_theme_constant_override("separation", 10)
+	mg.add_child(team_actions)
+	btn_team_stop = _button("STOP", _on_team_stop_pressed)
+	btn_team_dispatch = _button("DISPATCH", _on_team_dispatch_pressed)
+	btn_team_clear = _button("CLEAR", _on_team_clear_pressed)
+	for team_button in [btn_team_stop, btn_team_dispatch, btn_team_clear]:
+		team_button.custom_minimum_size = Vector2(94, 48)
+		team_button.add_theme_font_size_override("font_size", 16)
+		team_button.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+		_set_secondary_button_styles(team_button)
+		team_actions.add_child(team_button)
 
-	# Route module
-	var mr := _add_module(sv, "PLAN THE ROUTE")
+	# Route status stays with the group controls; the large dispatch module is
+	# intentionally removed so the team list can become the main command area.
 	var route_row := HBoxContainer.new()
 	route_row.add_theme_constant_override("separation", 8)
-	mr.add_child(route_row)
 	route_led = UiWidgets.Led.new(20.0)
 	route_led.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	route_row.add_child(route_led)
 	lbl_route = _wrap_label(14, COL_TEXT)
 	route_row.add_child(lbl_route)
+	mg.add_child(route_row)
 	hint_panel = PanelContainer.new()
 	hint_panel.add_theme_stylebox_override("panel",
 			_style(Color(UI_COLORS.ACCENT_TEAL, 0.08), UI_COLORS.TEAL_MID, 6, 1, 8))
 	lbl_hint = _wrap_label(12, COL_ACCENT)
 	lbl_hint.custom_minimum_size.y = 34
 	hint_panel.add_child(lbl_hint)
-	mr.add_child(hint_panel)
-
-	btn_dispatch = _button("DISPATCH", _dispatch)
-	btn_dispatch.custom_minimum_size.y = 64
-	btn_dispatch.add_theme_font_size_override("font_size", 20)
-	_set_dispatch_button_styles(btn_dispatch)
-	btn_dispatch.button_down.connect(_animate_dispatch_press.bind(true))
-	btn_dispatch.button_up.connect(_animate_dispatch_press.bind(false))
-	mr.add_child(btn_dispatch)
-	var row := HBoxContainer.new()
-	row.add_theme_constant_override("separation", 6)
-	btn_undo = _button("UNDO", _undo)
-	btn_clear = _button("CLEAR", _clear_route)
-	for b in [btn_undo, btn_clear]:
-		b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		_set_secondary_button_styles(b)
-		row.add_child(b)
-	mr.add_child(row)
-
-	# Losses module: one sprite slot per possible survivor loss
-	var ml := _add_module(sv, "PEOPLE LOST")
-	var strikes := HBoxContainer.new()
-	strikes.add_theme_constant_override("separation", 10)
-	ml.add_child(strikes)
-	for i in MAX_STRIKES:
-		var icon := TextureRect.new()
-		icon.texture = PEOPLE_LOST_EMPTY_TEXTURE
-		icon.custom_minimum_size = Vector2(24, 24)
-		icon.expand_mode = TextureRect.EXPAND_KEEP_SIZE
-		icon.stretch_mode = TextureRect.STRETCH_KEEP
-		icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		strikes.add_child(icon)
-		strike_icons.append(icon)
+	mg.add_child(hint_panel)
 
 	# Ops log module
 	var mo := _add_module(sv, "OPS LOG")
@@ -1260,6 +1479,18 @@ func _build_ui() -> void:
 	var keys := _wrap_label(11, COL_DIM)
 	keys.text = "Keys: Enter dispatch, Z/Backspace undo (STOP while a group moves), C clear, Tab next group, Esc deselect, V map style. Tap an earlier route tile to cut back to it."
 	help_box.add_child(keys)
+	var settings_row := HBoxContainer.new()
+	settings_row.alignment = BoxContainer.ALIGNMENT_END
+	var settings_spacer := Control.new()
+	settings_spacer.custom_minimum_size.y = 10
+	settings_spacer.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	sv.add_child(settings_spacer)
+	var game_settings_button := _button("SETTINGS", _show_settings_from_game)
+	game_settings_button.custom_minimum_size = Vector2(126, 42)
+	game_settings_button.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+	_set_secondary_button_styles(game_settings_button)
+	settings_row.add_child(game_settings_button)
+	sv.add_child(settings_row)
 
 	var tablet_frame := NinePatchRect.new()
 	tablet_frame.texture = TABLET_FRAME_TEXTURE
@@ -1293,6 +1524,88 @@ func _build_ui() -> void:
 	_juice_flash.visible = false
 	_juice_flash.z_index = 95
 	add_child(_juice_flash)
+
+	# Main menu overlay. The game scene is built underneath it so START GAME can
+	# enter the first round without changing scenes.
+	main_menu_overlay = ColorRect.new()
+	main_menu_overlay.name = "MainMenuOverlay"
+	main_menu_overlay.color = Color(UiPalette.BG_DARK, 0.97)
+	main_menu_overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
+	main_menu_overlay.mouse_filter = Control.MOUSE_FILTER_STOP
+	main_menu_overlay.z_index = 200
+	add_child(main_menu_overlay)
+
+	main_menu_card = PanelContainer.new()
+	main_menu_card.set_anchors_preset(Control.PRESET_CENTER)
+	main_menu_card.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	main_menu_card.grow_vertical = Control.GROW_DIRECTION_BOTH
+	main_menu_card.custom_minimum_size = Vector2(430, 0)
+	main_menu_card.add_theme_stylebox_override("panel", _style(COL_PANEL, COL_PANEL_EDGE, 14, 2, 0))
+	main_menu_overlay.add_child(main_menu_card)
+	var menu_box := VBoxContainer.new()
+	menu_box.add_theme_constant_override("separation", 14)
+	main_menu_card.add_child(menu_box)
+	var menu_logo := TextureRect.new()
+	menu_logo.texture = LOGO_TEXTURE
+	menu_logo.custom_minimum_size = Vector2(220, 66)
+	menu_logo.expand_mode = TextureRect.EXPAND_KEEP_SIZE
+	menu_logo.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	menu_logo.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	menu_logo.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	menu_box.add_child(menu_logo)
+	var menu_title := _label("EVAC GRID", 28, COL_ACCENT)
+	menu_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	menu_box.add_child(menu_title)
+	var menu_subtitle := _wrap_label(13, COL_DIM)
+	menu_subtitle.text = "PLAN THE ROUTE. SAVE THE CITY."
+	menu_subtitle.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	menu_box.add_child(menu_subtitle)
+	var start_button := _button("START GAME", _on_start_game_pressed)
+	start_button.custom_minimum_size.y = 54
+	start_button.add_theme_font_size_override("font_size", 20)
+	_set_dispatch_button_styles(start_button)
+	menu_box.add_child(start_button)
+	var settings_button := _button("SETTINGS", _show_settings_from_menu)
+	settings_button.custom_minimum_size.y = 46
+	_set_secondary_button_styles(settings_button)
+	menu_box.add_child(settings_button)
+
+	settings_panel = PanelContainer.new()
+	settings_panel.set_anchors_preset(Control.PRESET_CENTER)
+	settings_panel.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	settings_panel.grow_vertical = Control.GROW_DIRECTION_BOTH
+	settings_panel.custom_minimum_size = Vector2(430, 0)
+	settings_panel.add_theme_stylebox_override("panel", _style(COL_PANEL, COL_PANEL_EDGE, 14, 2, 0))
+	main_menu_overlay.add_child(settings_panel)
+	var settings_box := VBoxContainer.new()
+	settings_box.add_theme_constant_override("separation", 14)
+	settings_panel.add_child(settings_box)
+	settings_box.add_child(_label("SETTINGS", 26, COL_ACCENT))
+	lbl_volume = _label("VOLUME  100%", 16, COL_TEXT)
+	settings_box.add_child(lbl_volume)
+	volume_slider = HSlider.new()
+	volume_slider.min_value = 0.0
+	volume_slider.max_value = 100.0
+	volume_slider.step = 1.0
+	volume_slider.value = 100.0
+	volume_slider.custom_minimum_size.y = 30
+	volume_slider.value_changed.connect(_on_volume_changed)
+	settings_box.add_child(volume_slider)
+	var settings_note := _wrap_label(12, COL_DIM)
+	settings_note.text = "Adjusts the master audio volume."
+	settings_box.add_child(settings_note)
+	btn_end_game = _button("END GAME", _on_settings_end_game_pressed)
+	btn_end_game.custom_minimum_size.y = 46
+	_set_secondary_button_styles(btn_end_game)
+	btn_end_game.add_theme_color_override("font_color", COL_ALERT)
+	btn_end_game.add_theme_color_override("font_hover_color", UiPalette.WHITE)
+	btn_end_game.visible = false
+	settings_box.add_child(btn_end_game)
+	var settings_back := _button("BACK", _on_settings_back_pressed)
+	settings_back.custom_minimum_size.y = 46
+	_set_secondary_button_styles(settings_back)
+	settings_box.add_child(settings_back)
+	settings_panel.visible = false
 
 
 ## A framed control-unit module with a title; returns the box to fill.
@@ -1408,12 +1721,6 @@ func _flat_button_style(background: Color, edge: Color, border_width: int) -> St
 	style.content_margin_top = 8
 	style.content_margin_bottom = 8
 	return style
-
-
-func _animate_dispatch_press(is_pressed: bool) -> void:
-	btn_dispatch.pivot_offset = btn_dispatch.size * 0.5
-	var target_scale := Vector2.ONE * (0.95 if is_pressed else 1.0)
-	create_tween().tween_property(btn_dispatch, "scale", target_scale, 0.08)
 
 
 func _star_texture(lit: bool) -> AtlasTexture:

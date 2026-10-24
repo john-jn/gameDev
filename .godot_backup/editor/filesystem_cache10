@@ -1,0 +1,24 @@
+78098b89c88a74ebe8c20117b8754620
+::res://::1792834900
+EVAC_GRID.md::TextFile::-1::1792512034::0::1::::<><><>0<>0<><>::
+icon.svg::CompressedTexture2D::2804452754479026352::1792504161::1792834902::1::::<><><>0<>0<>301d8eb6d24b0e5f8359feb62dec21fa<>res://.godot/imported/icon.svg-218a8f2b3041327d8a5756f3a245f83b.ctex::
+README.md::TextFile::-1::1792504161::0::1::::<><><>0<>0<><>::
+::res://assets/::1792504161
+dispatch_map_ref.png::CompressedTexture2D::7350568469856819489::1792504161::1792834902::1::::<><><>0<>0<>15b732d31e40f6a18f43eb19b2c71571<>res://.godot/imported/dispatch_map_ref.png-971231e2401d3f25ac2c51618241a8b5.ctex::
+::res://reference/::1792512034
+Screenshot 2026-10-20 223823.png::CompressedTexture2D::2008247330775819741::1792512034::1792834902::1::::<><><>0<>0<>c892157d4215bf6d7c5df094d424ec5e<>res://.godot/imported/Screenshot 2026-10-20 223823.png-72140cabc776cd2808f3460edefa0a2a.ctex::
+::res://scenes/::1792504161
+game.tscn::PackedScene::4587381853277394207::1792504161::0::1::::<><><>0<>0<><>::
+main.tscn::PackedScene::-1::1792504161::0::1::::<><><>0<>0<><>::res://scripts/game.gd
+::res://scripts/::1792512034
+city_map.gd::GDScript::101095472716586932::1792507541::0::1::::CityMap<>RefCounted<><>0<>0<><>::
+game.gd::GDScript::2356474656871914135::1792512034::0::1::::<>Control<><>0<>0<><>::
+hazard_manager.gd::GDScript::1895291242059053678::1792512034::0::1::::HazardManager<>RefCounted<><>0<>0<><>::
+map_generator.gd::GDScript::2039768772391958821::1792512034::0::1::::MapGenerator<>RefCounted<><>0<>0<><>::
+map_view.gd::GDScript::62255712961007758::1792504161::0::1::::MapView<>Control<><>0<>0<><>::
+physarum_sim.gd::GDScript::3769318434857288984::1792507541::0::1::::PhysarumSim<>RefCounted<><>0<>0<><>::
+route_validator.gd::GDScript::9201298930703999702::1792504161::0::1::::RouteValidator<>RefCounted<><>0<>0<><>::
+score_keeper.gd::GDScript::1215990827234373057::1792504161::0::1::::ScoreKeeper<>RefCounted<><>0<>0<><>::
+survivor_group.gd::GDScript::5517721271615425992::1792504161::0::1::::SurvivorGroup<>RefCounted<><>0<>0<><>::
+::res://tests/::1792507541
+test_generation.gd::GDScript::1315446931656548015::1792507541::0::1::::<>SceneTree<><>0<>0<><>::

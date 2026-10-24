@@ -12,7 +12,7 @@ var checks := 0
 var seeds_per_round := 20
 
 
-func _initialize() -> void:
+func _init() -> void:
 	for arg in OS.get_cmdline_user_args():
 		if arg.begins_with("--seeds="):
 			seeds_per_round = arg.substr(8).to_int()
@@ -45,6 +45,7 @@ func _run() -> void:
 	test_map_view_alignment()
 	await test_game_integration()
 	await test_round_flow()
+	await test_no_safe_route_flow()
 	await test_best_score_file()
 	print("\n==== %d checks, %d failures, %.1fs ====" % [checks, failures, (Time.get_ticks_msec() - t0) / 1000.0])
 	quit(1 if failures > 0 else 0)
@@ -1139,13 +1140,24 @@ func test_round_flow() -> void:
 	game._on_next_pressed()
 	check(game.round_num == 2 and not game.round_over and not game.result_panel.visible, "Next Round should start round 2")
 
-	# Fail round 2 with a single survivor delivered: fewer than half get out.
+	# Fail round 2 by making the remaining group casualties outnumber the
+	# survivors still alive, which is the current game-over rule.
 	var first: SurvivorGroup = game.groups[0]
 	first.survivors = 1
 	first.state = SurvivorGroup.State.DELIVERED
 	game._on_group_event(first, {"type": "delivered", "tile": first.tile})
+	# The other members of the delivered group were not saved, so they also
+	# count as casualties under the current deaths-vs-survivors rule.
+	var first_lost_count: int = first.initial_survivors - first.survivors
+	for j in first_lost_count:
+		game.scorer.record_casualty()
 	for i in range(1, game.groups.size()):
-		game.groups[i].state = SurvivorGroup.State.LOST
+		var doomed: SurvivorGroup = game.groups[i]
+		var failed_lost_count: int = doomed.survivors
+		doomed.survivors = 0
+		doomed.state = SurvivorGroup.State.LOST
+		for j in failed_lost_count:
+			game.scorer.record_casualty()
 	game._process(0.05)
 	check(game.round_over and not game.last_round_success, "one survivor out of round 2 should fail it")
 	check(game.banked_score == banked, "a failed round must not bank points")
@@ -1171,14 +1183,22 @@ func test_round_flow() -> void:
 	# Tying the best is not enough; it has to be beaten.
 	game.banked_score = banked
 	for g in game.groups:
+		var retry_lost_count: int = g.survivors
+		g.survivors = 0
 		g.state = SurvivorGroup.State.LOST
+		for j in retry_lost_count:
+			game.scorer.record_casualty()
 	game._process(0.05)
 	check(game.round_over and not game.new_best and game.best_score == banked and not game.lbl_result_note.text.contains("NEW BEST"),
 			"a tied score must not count as a new best")
 	game._on_next_pressed()
 	game.banked_score = banked + 10
 	for g in game.groups:
+		var best_lost_count: int = g.survivors
+		g.survivors = 0
 		g.state = SurvivorGroup.State.LOST
+		for j in best_lost_count:
+			game.scorer.record_casualty()
 	game._process(0.05)
 	check(game.new_best and game.best_score == banked + 10 and game.best_round == 1, "a higher score should become the new best")
 	game.best_score = 0
@@ -1200,6 +1220,7 @@ func test_best_score_file() -> void:
 	game.best_score_path = TEST_BEST_PATH
 	root.add_child(game)
 	await process_frame
+	game._start_round()
 	check(game.best_score == 0 and game.best_round == 0, "missing file: the best should be 0")
 	var f := FileAccess.open(TEST_BEST_PATH, FileAccess.WRITE)
 	f.store_string("[best]\nscore = \"unterminated\nround = {{{\n")
@@ -1221,7 +1242,11 @@ func test_best_score_file() -> void:
 	check(game.log_lines[-1].contains("Could not save the best score"), "a failed save should be logged")
 	game.banked_score = 80
 	for g in game.groups:
+		var lost_count: int = g.survivors
+		g.survivors = 0
 		g.state = SurvivorGroup.State.LOST
+		for j in lost_count:
+			game.scorer.record_casualty()
 	game._process(0.05)
 	check(game.round_over and game.lbl_result_title.text == "GAME OVER" and game.best_score == 80,
 			"the game should still end the run and keep the new best in memory")
@@ -1231,6 +1256,51 @@ func test_best_score_file() -> void:
 	game.queue_free()
 	await process_frame
 	_remove_user_file(TEST_BEST_PATH)
+
+
+## A no-route ending must count waiting/blocked groups as lost before deciding
+## whether the saved count is high enough to continue.
+func test_no_safe_route_flow() -> void:
+	print("\n[no safe route] trapped groups and strict saved-vs-lost result")
+	var game: Control = load("res://scenes/main.tscn").instantiate()
+	root.add_child(game)
+	await process_frame
+	_setup_no_route_case(game, 2, 2)
+	game._check_round_end()
+	check(game.round_over and not game.last_round_success and game.scorer.lost == 2,
+			"equal saved/lost after trapping a group should be game over")
+	check(game.lbl_result_title.text == "GAME OVER", "equal no-route result should show GAME OVER")
+	_setup_no_route_case(game, 3, 2)
+	game._check_round_end()
+	check(game.round_over and game.last_round_success and game.scorer.lost == 2,
+			"more saved than trapped should continue after a no-safe-route ending")
+	check(game.lbl_result_title.text == "NO SAFE ROUTE" and game.btn_next.text.begins_with("NEXT ROUND"),
+			"successful no-route result should offer NEXT ROUND")
+	print("  equal saved/lost fails; saved > trapped continues")
+	game.queue_free()
+	await process_frame
+
+
+func _setup_no_route_case(game: Control, saved: int, trapped: int) -> void:
+	var m := CityMap.new()
+	m.setup(3, 1, CityMap.Tile.BUILDING)
+	m.set_tile(Vector2i(0, 0), CityMap.Tile.ROAD)
+	m.set_tile(Vector2i(1, 0), CityMap.Tile.ROAD)
+	m.set_tile(Vector2i(2, 0), CityMap.Tile.SAFE)
+	m.add_fire(Vector2i(1, 0))
+	game.map = m
+	game.map_view.map = m
+	var delivered := SurvivorGroup.new(0, "A", Vector2i(2, 0), saved)
+	delivered.state = SurvivorGroup.State.DELIVERED
+	var trapped_group := SurvivorGroup.new(1, "B", Vector2i(0, 0), trapped)
+	var test_groups: Array[SurvivorGroup] = [delivered, trapped_group]
+	game.groups = test_groups
+	game._build_group_rows()
+	game.scorer = ScoreKeeper.new()
+	game.scorer.delivered = saved
+	game.round_over = false
+	game.last_round_success = false
+	game.result_panel.visible = false
 
 
 func _remove_user_file(path: String) -> void:
