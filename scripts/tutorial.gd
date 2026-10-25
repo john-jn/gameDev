@@ -12,6 +12,8 @@ const STATE_PATH := "user://tutorial.cfg"
 
 enum Step { INTRO, SELECT, DRAW, DISPATCH, WATCH, SECOND, DONE }
 const STEP_COUNT := 6  ## numbered steps shown to the player (DONE is the wrap-up)
+const CARD_WIDTH := 440.0
+enum Place { CENTER, TOP, BOTTOM }
 
 var active := false
 var step := Step.INTRO
@@ -29,12 +31,14 @@ var _done_box: VBoxContainer
 var _offer: ColorRect
 var _pulse_buttons: Array[Button] = []
 var _time := 0.0
+var _place := -1
+var _fade: Tween
 
 
-func setup(game: Control, side_box: VBoxContainer) -> void:
+func setup(game: Control, parent: Control) -> void:
 	_game = game
 	_load()
-	_build_card(side_box)
+	_build_card(parent)
 	_build_offer()
 
 
@@ -53,6 +57,7 @@ func begin() -> void:
 	active = true
 	_offer.visible = false
 	_card.visible = true
+	_place = -1
 	_done_box.visible = false
 	_enter(Step.INTRO)
 
@@ -106,6 +111,10 @@ func tick(delta: float) -> void:
 				_complete()
 			else:
 				_second_team(b)
+	_card.reset_size()
+	_apply_place()
+	if step != Step.DONE:
+		_avoid_guide()
 
 
 func _second_team(b: SurvivorGroup) -> void:
@@ -153,6 +162,8 @@ func _enter(s: Step) -> void:
 		Step.DONE:
 			pass
 	_game.map_view.guide_tiles.clear()
+	_set_place(Place.CENTER if s == Step.INTRO else (Place.TOP if _place == Place.CENTER or _place < 0 else _place))
+	_refit()
 
 
 func _complete() -> void:
@@ -168,6 +179,8 @@ func _complete() -> void:
 	_btn_next.visible = false
 	_btn_exit.visible = false
 	_done_box.visible = true
+	_set_place(Place.CENTER)
+	_refit()
 
 
 # --- Helpers -------------------------------------------------------------------
@@ -273,13 +286,14 @@ func _save() -> void:
 
 # --- UI ------------------------------------------------------------------------
 
-func _build_card(side_box: VBoxContainer) -> void:
+func _build_card(parent: Control) -> void:
 	_card = PanelContainer.new()
-	_card.add_theme_stylebox_override("panel", _game._style(
-			Color(UI_COLORS.ACCENT_TEAL, 0.1), UI_COLORS.ACCENT_TEAL, 6, 2, 10))
+	_card.add_theme_stylebox_override("panel", _popup_style())
+	_card.custom_minimum_size = Vector2(CARD_WIDTH, 0)
+	_card.z_index = 60
+	_card.mouse_filter = Control.MOUSE_FILTER_STOP
 	_card.visible = false
-	side_box.add_child(_card)
-	side_box.move_child(_card, 0)
+	parent.add_child(_card)
 	var box := VBoxContainer.new()
 	box.add_theme_constant_override("separation", 6)
 	_card.add_child(box)
@@ -355,3 +369,58 @@ func _build_offer() -> void:
 	no.custom_minimum_size.y = 44
 	_game._set_secondary_button_styles(no)
 	box.add_child(no)
+
+
+# --- Pop-up placement ------------------------------------------------------------
+
+func _popup_style() -> StyleBoxFlat:
+	var sb: StyleBoxFlat = _game._style(UI_COLORS.BG_PANEL, UI_COLORS.ACCENT_TEAL, 10, 2, 14)
+	sb.shadow_color = Color(0.0, 0.0, 0.0, 0.55)
+	sb.shadow_size = 14
+	return sb
+
+
+## Puts the pop-up at the top, bottom or centre of the map area.
+func _set_place(mode: int) -> void:
+	if mode == _place:
+		return
+	_place = mode
+	_apply_place()
+
+
+## Anchors the pop-up to its edge. Re-applied every frame because its height
+## changes with the text and only settles after the first layout pass.
+func _apply_place() -> void:
+	match _place:
+		Place.CENTER:
+			_card.set_anchors_and_offsets_preset(Control.PRESET_CENTER, Control.PRESET_MODE_MINSIZE)
+			_card.grow_horizontal = Control.GROW_DIRECTION_BOTH
+			_card.grow_vertical = Control.GROW_DIRECTION_BOTH
+		Place.TOP:
+			_card.set_anchors_and_offsets_preset(Control.PRESET_CENTER_TOP, Control.PRESET_MODE_MINSIZE, 14)
+			_card.grow_horizontal = Control.GROW_DIRECTION_BOTH
+			_card.grow_vertical = Control.GROW_DIRECTION_END
+		Place.BOTTOM:
+			_card.set_anchors_and_offsets_preset(Control.PRESET_CENTER_BOTTOM, Control.PRESET_MODE_MINSIZE, 14)
+			_card.grow_horizontal = Control.GROW_DIRECTION_BOTH
+			_card.grow_vertical = Control.GROW_DIRECTION_BEGIN
+
+
+## Moves the pop-up to the other edge when it would cover a highlighted tile.
+func _avoid_guide() -> void:
+	if _place == Place.CENTER or _game.map_view.guide_tiles.is_empty():
+		return
+	var covered := _card.get_rect().grow(20.0)
+	for t in _game.map_view.guide_tiles:
+		if covered.has_point(_game.map_view.tile_center(t)):
+			_set_place(Place.BOTTOM if _place == Place.TOP else Place.TOP)
+			return
+
+
+func _refit() -> void:
+	_card.reset_size()
+	if _fade != null and _fade.is_running():
+		_fade.kill()
+	_card.modulate.a = 0.0
+	_fade = _card.create_tween()
+	_fade.tween_property(_card, "modulate:a", 1.0, 0.2)

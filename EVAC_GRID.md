@@ -29,7 +29,7 @@ Keys: Enter/Space dispatch, Z/Backspace undo (STOP while a group moves), C clear
 
 ## Tutorial
 
-A guided practice round on the hand-authored training map, with no fire and no score. A coach card at the top of the side panel walks through select a team, draw a route, dispatch, watch it arrive, then the same for the second team. Pulsing brackets on the map and a pulsing DISPATCH button show where to act, and each step waits for the player to do it.
+A guided practice round on the hand-authored training map, with no fire and no score. A pop-up over the map walks through select a team, draw a route, dispatch, watch it arrive, then the same for the second team. The pop-up moves to the other edge of the map so it never covers the highlighted tile. Pulsing brackets on the map and a pulsing DISPATCH button show where to act, and each step waits for the player to do it.
 
 - **Reach it:** the **TUTORIAL** button on the main menu, or the one-time "NEW HERE?" offer when a player with no saved best score presses START GAME. The offer is shown once; progress is stored in `user://tutorial.cfg`.
 - **Code:** `scripts/tutorial.gd` (state machine and coach card), small hooks in `game.gd` (`_start_tutorial`, `_exit_tutorial`, `tutorial.tick`), and `MapView.guide_tiles` for the highlights.

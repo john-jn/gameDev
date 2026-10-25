@@ -155,7 +155,6 @@ var _menu_time := 0.0
 var _menu_fade: Tween
 var game_started := false
 var tutorial := Tutorial.new()
-var side_box: VBoxContainer
 var settings_from_game := false
 var forced_game_over := false
 var focused_group: SurvivorGroup = null
@@ -180,7 +179,7 @@ func _ready() -> void:
 		elif arg == "--visual=dispatch":
 			visual_style = VisualTheme.Style.DISPATCH_STYLE
 	_build_ui()
-	tutorial.setup(self, side_box)
+	tutorial.setup(self, map_view.get_parent())
 	set_visual_style(visual_style)
 	_load_best_score()
 	_load_volume()
@@ -1593,7 +1592,6 @@ func _build_ui() -> void:
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	side.add_child(scroll)
 	var sv := VBoxContainer.new()
-	side_box = sv
 	sv.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	sv.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	sv.add_theme_constant_override("separation", 12)
