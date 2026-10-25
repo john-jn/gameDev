@@ -28,8 +28,8 @@ window/stretch/aspect="expand"
 
 [editor]
 
-movie_writer/mjpeg_quality=0.7
 movie_writer/fps=30
+movie_writer/mjpeg_quality=0.7
 
 [physics]
 

@@ -658,16 +658,20 @@ func _run() -> void:
 		await _send(a2, true, 0.08)
 	await _finish_say()
 
-	# [2:40] What's next + outro.
+	# [2:40] What's next + outro, over the end card. The round is frozen
+	# first so the card covers a calm board.
+	game.process_mode = Node.PROCESS_MODE_DISABLED
+	_layer.move_child(_caption_box, -1)  # captions sit above the end-card fade
+	_layer.move_child(_pointer, -1)
+	create_tween().tween_property(_pointer, "modulate:a", 0.0, 0.4)
+	var to_card := create_tween().set_parallel(true)
+	to_card.tween_property(_fade, "color:a", 0.9, 0.8)
+	to_card.tween_property(_end_card, "modulate:a", 1.0, 0.8)
 	_say("What's next", "And we're just getting started: earthquakes, floods and nonstop fires, plus new maps inspired by Philippine landmarks.")
 	await _finish_say()
 	_say("", "Also coming: character designs, collectible skills, local and global leaderboards, and a Co-op Duel mode where you and a friend compete for the best evacuation score.")
 	await _finish_say()
 	_hide_caption()
-	create_tween().tween_property(_pointer, "modulate:a", 0.0, 0.4)
-	var to_card := create_tween().set_parallel(true)
-	to_card.tween_property(_fade, "color:a", 0.88, 0.8)
-	to_card.tween_property(_end_card, "modulate:a", 1.0, 0.8)
 	_end_line.text = "Stay calm. Think fast. Get everyone home."
 	await _wait(3.4)
 	_end_line.text = "Thanks for watching. Now go save some people."
