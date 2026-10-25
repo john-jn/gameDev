@@ -12,7 +12,7 @@ dest_files=["res://.godot/imported/music_calm.mp3-0ee679b9abe65315ef7be1971d69ad
 
 [params]
 
-loop=false
+loop=true
 loop_offset=0
 bpm=0
 beat_count=0

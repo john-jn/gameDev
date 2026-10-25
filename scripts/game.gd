@@ -146,6 +146,10 @@ var settings_panel: PanelContainer
 var btn_end_game: Button
 var volume_slider: HSlider
 var lbl_volume: UiWidgets.Lcd
+var music_slider: HSlider
+var lbl_music_volume: UiWidgets.Lcd
+var sfx_slider: HSlider
+var lbl_sfx_volume: UiWidgets.Lcd
 var _menu_map: CityMap  ## backdrop city while the main menu is up; null during play
 var _menu_time := 0.0
 var _menu_fade: Tween
@@ -188,6 +192,9 @@ func _ready() -> void:
 func _show_main_menu() -> void:
 	if main_menu_overlay == null:
 		return
+	Audio.stop_loop("fire_loop")
+	Audio.stop_loop("footsteps_loop")
+	Audio.play_music("calm")
 	_stop_menu_fade()
 	main_menu_overlay.visible = true
 	main_menu_card.visible = true
@@ -269,6 +276,7 @@ func _on_start_game_pressed() -> void:
 		tutorial.finish_exit()
 	if game_started:
 		return  # a second click while the menu fades out
+	Audio.play_sfx("tablet_on")
 	game_started = true
 	round_num = 1
 	banked_score = 0
@@ -288,6 +296,7 @@ func _start_tutorial() -> void:
 	_stop_menu_fade()
 	main_menu_overlay.visible = false
 	settings_panel.visible = false
+	Audio.play_sfx("tablet_on")
 	game_started = true
 	round_num = 1
 	banked_score = 0
@@ -329,31 +338,63 @@ func _on_settings_end_game_pressed() -> void:
 
 
 func _load_volume() -> void:
-	var volume := 100.0
+	var master := 100.0
+	var music := 100.0
+	var sfx := 100.0
 	var cfg := ConfigFile.new()
 	if cfg.load(SETTINGS_PATH) == OK:
-		volume = clampf(float(cfg.get_value("audio", "volume", volume)), 0.0, 100.0)
-	_set_volume(volume)
+		var legacy_master: Variant = cfg.get_value("audio", "volume", master)
+		master = clampf(float(cfg.get_value("audio", "master_volume", legacy_master)), 0.0, 100.0)
+		music = clampf(float(cfg.get_value("audio", "music_volume", music)), 0.0, 100.0)
+		sfx = clampf(float(cfg.get_value("audio", "sfx_volume", sfx)), 0.0, 100.0)
+	_set_volume(master)
+	_set_bus_volume_percent("Music", music)
+	_set_bus_volume_percent("SFX", sfx)
 	if volume_slider != null:
-		volume_slider.value = volume
-		lbl_volume.text = "%d%%" % roundi(volume)
+		volume_slider.value = master
+		lbl_volume.text = "%d%%" % roundi(master)
+		music_slider.value = music
+		lbl_music_volume.text = "%d%%" % roundi(music)
+		sfx_slider.value = sfx
+		lbl_sfx_volume.text = "%d%%" % roundi(sfx)
 
 
 func _set_volume(percent: float) -> void:
-	var bus := AudioServer.get_bus_index("Master")
-	if bus < 0:
-		return
-	var linear := clampf(percent / 100.0, 0.0, 1.0)
-	AudioServer.set_bus_volume_db(bus, -80.0 if linear <= 0.001 else linear_to_db(linear))
+	_set_bus_volume_percent("Master", percent)
+
+
+func _set_bus_volume_percent(bus_name: String, percent: float) -> void:
+	Audio.set_bus_volume(bus_name, clampf(percent / 100.0, 0.0, 1.0))
+
+
+func _save_audio_settings() -> void:
+	var cfg := ConfigFile.new()
+	cfg.set_value("audio", "volume", volume_slider.value)  # legacy master key
+	cfg.set_value("audio", "master_volume", volume_slider.value)
+	cfg.set_value("audio", "music_volume", music_slider.value)
+	cfg.set_value("audio", "sfx_volume", sfx_slider.value)
+	cfg.save(SETTINGS_PATH)
 
 
 func _on_volume_changed(value: float) -> void:
 	_set_volume(value)
 	if lbl_volume != null:
 		lbl_volume.text = "%d%%" % roundi(value)
-	var cfg := ConfigFile.new()
-	cfg.set_value("audio", "volume", value)
-	cfg.save(SETTINGS_PATH)
+	_save_audio_settings()
+
+
+func _on_music_volume_changed(value: float) -> void:
+	_set_bus_volume_percent("Music", value)
+	if lbl_music_volume != null:
+		lbl_music_volume.text = "%d%%" % roundi(value)
+	_save_audio_settings()
+
+
+func _on_sfx_volume_changed(value: float) -> void:
+	_set_bus_volume_percent("SFX", value)
+	if lbl_sfx_volume != null:
+		lbl_sfx_volume.text = "%d%%" % roundi(value)
+	_save_audio_settings()
 
 
 # --- Round flow -----------------------------------------------------------------
@@ -376,6 +417,11 @@ func _start_round() -> void:
 		g.fire_lethal = hazards.fire_lethal
 		g.smoke_drain = hazards.smoke_drain
 	hazards.place_starting_fires(map, groups)
+	Audio.play_music("calm")
+	if map.fires.is_empty():
+		Audio.stop_loop("fire_loop")
+	else:
+		Audio.play_loop("fire_loop")
 	scorer = ScoreKeeper.new()
 	selected = null
 	focused_group = null
@@ -418,6 +464,19 @@ func _process(delta: float) -> void:
 				_on_group_event(g, ev)
 		for fire in hazards.update(delta, map, groups):
 			_on_hazard(fire)
+		if map.fires.is_empty():
+			Audio.stop_loop("fire_loop")
+		else:
+			Audio.play_loop("fire_loop")
+		var any_moving := false
+		for g in groups:
+			if g.state == SurvivorGroup.State.MOVING:
+				any_moving = true
+				break
+		if any_moving:
+			Audio.play_loop("footsteps_loop")
+		else:
+			Audio.stop_loop("footsteps_loop")
 		for spot in hazards.spotted:
 			map_view.popup(spot, "FIRE REPORTED", COL_WARN)
 			_log("FIRE REPORTED at (%d, %d) - it ignites in %.0fs." % [spot.x, spot.y, hazards.spot_warning])
@@ -439,12 +498,14 @@ func _on_group_event(g: SurvivorGroup, ev: Dictionary) -> void:
 				_select_group(g)
 				_notify("Group %s halted. Draw a detour from its position, then DISPATCH." % g.label, COL_ALERT)
 		"casualty":
+			Audio.play_sfx("casualty")
 			var pts := scorer.record_casualty()
 			map_view.popup(tile, "-1 survivor (%d)" % pts, COL_ALERT)
 			_show_score_popup(pts)
 			_trigger_juice_alert()
 			_log("Group %s lost a survivor in smoke (%d)." % [g.label, pts])
 		"delivered":
+			Audio.play_sfx("team_safe")
 			var res := scorer.record_delivery(g)
 			var points: int = int(res["rescue"]) + int(res["efficiency"])
 			map_view.popup(tile, "+%d" % points, COL_OK)
@@ -453,6 +514,7 @@ func _on_group_event(g: SurvivorGroup, ev: Dictionary) -> void:
 			_log("Group %s SAFE: %d survivors (+%d), efficiency %d%% (+%d)." % [
 				g.label, g.survivors, res["rescue"], roundi(res["ratio"] * 100.0), res["efficiency"]])
 		"lost":
+			Audio.play_sfx("casualty")
 			if ev.get("cause", "") == "fire":
 				var count: int = ev.get("count", 0)
 				var pts := 0
@@ -467,6 +529,8 @@ func _on_group_event(g: SurvivorGroup, ev: Dictionary) -> void:
 
 
 func _on_hazard(fire: Vector2i) -> void:
+	Audio.play_sfx("fire_start")
+	Audio.play_loop("fire_loop")
 	map_view.popup(fire, "FIRE!", COL_ALERT)
 	_trigger_juice_alert()
 	var hit: Array[String] = []
@@ -544,6 +608,10 @@ func _no_safe_route_remaining() -> bool:
 
 
 func _end_round(success: bool, no_route: bool = false) -> void:
+	Audio.stop_loop("fire_loop")
+	Audio.stop_loop("footsteps_loop")
+	Audio.play_sfx("round_complete" if success else "round_failed")
+	Audio.play_music("win" if success else "fail")
 	round_over = true
 	last_round_success = success
 	var total_survivors := _total_people()
@@ -693,6 +761,7 @@ func _select_group(g: SurvivorGroup) -> void:
 	if g == null or not g.can_plan():
 		return
 	selected = g
+	Audio.play_sfx("select_team")
 	focused_group = g
 	_apply_team_button_styles()
 	route.clear()
@@ -708,6 +777,7 @@ func _dispatch() -> void:
 		return
 	var v := RouteValidator.validate(map, route, selected.tile)
 	if not v["valid"] or not v["complete"]:
+		Audio.play_sfx("invalid")
 		_notify("Cannot dispatch: " + str(v["reason"]), COL_ALERT)
 		if v["bad_index"] >= 0 and v["bad_index"] < route.size():
 			map_view.flash_invalid(route[v["bad_index"]])
@@ -724,6 +794,8 @@ func _dispatch() -> void:
 	focused_group = selected
 	stop_target = selected
 	selected.dispatch(route)
+	Audio.play_sfx("detour_dispatch" if is_reroute else "dispatch")
+	Audio.play_loop("footsteps_loop")
 	first_successful_dispatch = true
 	hint_panel.visible = false
 	plan_clock_start = round_time
@@ -741,17 +813,20 @@ func _undo() -> void:
 	if selected == null or not selected.can_plan():
 		var g := _stop_candidate()
 		if g != null:
+			Audio.play_sfx("undo")
 			focused_group = g
 			g.stop(round_time)
 			_log("STOP: Group %s halting." % g.label)
 			_notify("Group %s stopping. Draw a detour from where it halts, then DISPATCH." % g.label, COL_WARN)
 		return
 	if route.size() > 1:
+		Audio.play_sfx("undo")
 		route.pop_back()
 
 
 func _clear_route() -> void:
 	if selected != null and selected.can_plan():
+		Audio.play_sfx("clear")
 		route.clear()
 		route.append(selected.tile)
 
@@ -1700,24 +1775,16 @@ func _build_ui() -> void:
 	settings_panel = PanelContainer.new()
 	var settings_box := _setup_menu_card(settings_panel)
 	_add_title_strip(settings_box, "SETTINGS", "CONFIG").set_state(COL_OK, true)
-	var volume_box := _add_module(settings_box, "MASTER VOLUME")
-	var volume_row := HBoxContainer.new()
-	volume_row.add_theme_constant_override("separation", 12)
-	volume_box.add_child(volume_row)
-	volume_slider = HSlider.new()
-	volume_slider.min_value = 0.0
-	volume_slider.max_value = 100.0
-	volume_slider.step = 1.0
-	volume_slider.value = 100.0
-	volume_slider.custom_minimum_size.y = 30
-	volume_slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	volume_slider.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	_set_slider_styles(volume_slider)
-	volume_slider.value_changed.connect(_on_volume_changed)
-	volume_row.add_child(volume_slider)
-	lbl_volume = UiWidgets.Lcd.new("100%", 22, COL_ACCENT)
-	lbl_volume.custom_minimum_size.x = 92
-	volume_row.add_child(lbl_volume)
+	var volume_box := _add_module(settings_box, "AUDIO VOLUME")
+	var master_control := _add_audio_slider(volume_box, "MASTER", _on_volume_changed)
+	volume_slider = master_control[0] as HSlider
+	lbl_volume = master_control[1] as UiWidgets.Lcd
+	var music_control := _add_audio_slider(volume_box, "MUSIC", _on_music_volume_changed)
+	music_slider = music_control[0] as HSlider
+	lbl_music_volume = music_control[1] as UiWidgets.Lcd
+	var sfx_control := _add_audio_slider(volume_box, "SOUND FX", _on_sfx_volume_changed)
+	sfx_slider = sfx_control[0] as HSlider
+	lbl_sfx_volume = sfx_control[1] as UiWidgets.Lcd
 	var settings_actions := HBoxContainer.new()
 	settings_actions.add_theme_constant_override("separation", 8)
 	settings_box.add_child(settings_actions)
@@ -1746,6 +1813,30 @@ func _add_module(parent: Control, title: String) -> VBoxContainer:
 	frame.add_child(box)
 	box.add_child(_label(title, 14, COL_ACCENT))
 	return box
+
+
+func _add_audio_slider(parent: Control, title: String, callback: Callable) -> Array:
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 12)
+	parent.add_child(row)
+	var caption := _label(title, 12, COL_TEXT)
+	caption.custom_minimum_size.x = 88
+	row.add_child(caption)
+	var slider := HSlider.new()
+	slider.min_value = 0.0
+	slider.max_value = 100.0
+	slider.step = 1.0
+	slider.value = 100.0
+	slider.custom_minimum_size.y = 30
+	slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	slider.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	_set_slider_styles(slider)
+	slider.value_changed.connect(callback)
+	row.add_child(slider)
+	var display := UiWidgets.Lcd.new("100%", 20, COL_ACCENT)
+	display.custom_minimum_size.x = 78
+	row.add_child(display)
+	return [slider, display]
 
 
 ## Turns `card` into a centred control-unit box on the menu overlay, framed
