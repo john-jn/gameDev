@@ -8,8 +8,9 @@ const MUSIC := {
 	"fail": preload("res://assets/audio/music_result_fail.ogg"),
 }
 
+# Removed for now (files kept in assets/audio/): alert_blocked, help_toggle,
+# next_round, plan_warning, radio_static, route_tick, score_tick, star_on.
 const SFX := {
-	"alert_blocked": preload("res://assets/audio/sfx_alert_blocked.ogg"),
 	"button_hover": preload("res://assets/audio/sfx_button_hover.ogg"),
 	"casualty": preload("res://assets/audio/sfx_casualty.ogg"),
 	"clear": preload("res://assets/audio/sfx_clear.ogg"),
@@ -18,17 +19,10 @@ const SFX := {
 	"fire_loop": preload("res://assets/audio/sfx_fire_loop.wav"),
 	"fire_start": preload("res://assets/audio/sfx_fire_start.ogg"),
 	"footsteps_loop": preload("res://assets/audio/sfx_footsteps_loop.wav"),
-	"help_toggle": preload("res://assets/audio/sfx_help_toggle.ogg"),
 	"invalid": preload("res://assets/audio/sfx_invalid.ogg"),
-	"next_round": preload("res://assets/audio/sfx_next_round.ogg"),
-	"plan_warning": preload("res://assets/audio/sfx_plan_warning.ogg"),
-	"radio_static": preload("res://assets/audio/sfx_radio_static.wav"),
 	"round_complete": preload("res://assets/audio/sfx_round_complete.ogg"),
 	"round_failed": preload("res://assets/audio/sfx_round_failed.ogg"),
-	"route_tick": preload("res://assets/audio/sfx_route_tick.ogg"),
-	"score_tick": preload("res://assets/audio/sfx_score_tick.ogg"),
 	"select_team": preload("res://assets/audio/sfx_select_team.ogg"),
-	"star_on": preload("res://assets/audio/sfx_star_on.ogg"),
 	"tablet_on": preload("res://assets/audio/sfx_tablet_on.ogg"),
 	"team_safe": preload("res://assets/audio/sfx_team_safe.ogg"),
 	"undo": preload("res://assets/audio/sfx_undo.ogg"),
@@ -38,6 +32,8 @@ const MUSIC_BUS := &"Music"
 const SFX_BUS := &"SFX"
 const SFX_VOICES := 8
 const SILENT_DB := -40.0
+const MUSIC_LEVEL := 0.6  # all music plays at 60% of its file volume (about -4.4 dB)
+const SFX_LEVEL := 0.8  # all sound effects play at 80% of their file volume (about -1.9 dB)
 
 var _music: AudioStreamPlayer
 var _music_tween: Tween
@@ -90,7 +86,7 @@ func play_music(key: String, fade := 0.5) -> void:
 		_music.stream = stream
 		_music.volume_db = SILENT_DB
 		_music.play())
-	_music_tween.tween_property(_music, "volume_db", 0.0, fade)
+	_music_tween.tween_property(_music, "volume_db", linear_to_db(MUSIC_LEVEL), fade)
 
 
 func stop_music(fade := 0.5) -> void:
@@ -111,7 +107,7 @@ func play_sfx(key: String, pitch_jitter := 0.05, volume_db := 0.0) -> void:
 	for player in _sfx_pool:
 		if not player.playing:
 			player.stream = stream
-			player.volume_db = volume_db
+			player.volume_db = linear_to_db(SFX_LEVEL) + volume_db
 			player.pitch_scale = randf_range(1.0 - pitch_jitter, 1.0 + pitch_jitter)
 			player.play()
 			return
@@ -132,6 +128,7 @@ func play_loop(key: String) -> void:
 		(stream as AudioStreamWAV).loop_mode = AudioStreamWAV.LOOP_FORWARD
 	player.stream = stream
 	player.finished.connect(_on_loop_finished.bind(key, player))
+	player.volume_db = linear_to_db(SFX_LEVEL)
 	player.play()
 	_loops[key] = player
 

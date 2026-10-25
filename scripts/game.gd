@@ -416,7 +416,7 @@ func _start_round() -> void:
 		g.fire_lethal = hazards.fire_lethal
 		g.smoke_drain = hazards.smoke_drain
 	hazards.place_starting_fires(map, groups)
-	Audio.play_music("calm")
+	Audio.play_music("tense")
 	if map.fires.is_empty():
 		Audio.stop_loop("fire_loop")
 	else:
