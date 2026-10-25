@@ -1,0 +1,10 @@
+[gd_scene load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://demo/demo_director.gd" id="1_director"]
+[ext_resource type="PackedScene" uid="uid://duptkbiofed2h" path="res://scenes/main.tscn" id="2_main"]
+
+[node name="DemoRender" type="Node"]
+script = ExtResource("1_director")
+metadata/movie_file = "C:/Users/otaku/Documents/VSC/gameDev/demo_output/evac_grid_tutorial.ogv"
+
+[node name="Main" parent="." instance=ExtResource("2_main")]
